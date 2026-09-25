@@ -9,6 +9,15 @@ App web (un solo `index.html`) para contar tubos / círculos en una foto tomada 
 
 Si el navegador no permite la cámara en vivo, **Cámara del sistema** abre la cámara nativa del teléfono.
 
+### Modo recorrido (pilas grandes, zigzag)
+**Recorrido: mapear pila grande en zigzag.** Empieza arriba a la izquierda, recorre la franja despacio, baja un poco y regresa, hasta cubrir toda la pila.
+- **Rastreo de cámara** en el hilo principal (~20–30 cuadros/s): flujo óptico Lucas‑Kanade con verificación de ida y vuelta y predicción por velocidad. Esto evita confundir un tubo con su vecino en una pila periódica.
+- **Detección en un Web Worker** con su propia copia de OpenCV, en paralelo. Cada tubo se ubica en un **mapa global**. Si ya existe en el mapa no se vuelve a contar; se confirma y numera al verse en 3 o más cuadros.
+- **Corrección de deriva:** en cada cuadro se alinea con los tubos ya confirmados.
+- Avisos en pantalla: *Rastreo OK*, *Más despacio* (no cuenta mientras vas rápido) y *Rastreo perdido* (regresa a la zona anterior; vibra). Un minimapa muestra lo ya cubierto.
+- **Terminar** arma un mosaico con los cuadros clave (guardados en JPEG para pilas de más de 500 tubos) y muestra el mapa completo numerado, con corrección por toque.
+- Prueba con una pila sintética de 485 tubos recorrida en 3 franjas: conteo 485/485.
+
 ### Modo en vivo
 **Contar en vivo mientras apuntas** detecta en cada cuadro de video (a 560 px, 2–4 análisis/s) y dibuja los círculos encima de la imagen con su número.
 - Cada círculo se sigue entre cuadros. Sólo se cuenta cuando aparece en al menos 3 cuadros y en la mitad del tiempo, así los falsos de un solo cuadro no suben el conteo.

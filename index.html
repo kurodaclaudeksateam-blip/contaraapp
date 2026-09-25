@@ -79,6 +79,10 @@ h1 em{font-style:normal;color:var(--accent)}
 .live-hud .rec{display:inline-block;width:9px;height:9px;border-radius:50%;background:#FF4D5E;margin-right:6px;animation:blink 1.2s steps(2) infinite}
 @keyframes blink{50%{opacity:.2}}
 @media (prefers-reduced-motion:reduce){.live-hud .rec{animation:none}}
+#minimap{position:absolute;right:14px;bottom:calc(120px + env(safe-area-inset-bottom,0px));width:120px;height:120px;border-radius:10px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.25)}
+.live-hud .st b{color:#3DDC97;font-weight:500}
+.live-hud .st.warn b{color:#FFC53D}
+.live-hud .st.bad b{color:#FF4D5E}
 #btnFinish{background:#FF7A2E;color:#1A0D04;border-radius:999px;padding:18px 26px;font-size:16px;min-width:140px}
 
 /* ---------- resultado ---------- */
@@ -128,7 +132,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="gauge" aria-hidden="true"><span></span><span></span><span></span><span class="x"></span><span></span><span></span><span class="x"></span></div>
     <div class="start-actions">
       <button id="btnStart" class="btn-primary">Iniciar y abrir cámara</button>
-      <button id="btnLive" class="btn-ghost" style="padding:16px;border-color:var(--accent)">Contar en vivo mientras apuntas</button>
+      <button id="btnSweep" class="btn-ghost" style="padding:16px;border-color:var(--accent)">Recorrido: mapear pila grande en zigzag</button>
+      <button id="btnLive" class="btn-ghost" style="padding:16px">Contar en vivo mientras apuntas</button>
       <div class="start-row">
         <label class="btn btn-ghost" for="fileCam" tabindex="0">Cámara del sistema</label>
         <label class="btn btn-ghost" for="fileGallery" tabindex="0">Galería</label>
@@ -145,9 +150,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="reticle"></div>
     <canvas id="overlay" hidden></canvas>
     <div class="live-hud" id="liveHud" hidden>
-      <div><div class="l"><span class="rec"></span>Contando en vivo</div><div class="n" id="liveNum">0</div></div>
+      <div><div class="l"><span class="rec"></span><span id="liveLbl">Contando en vivo</span></div><div class="n" id="liveNum">0</div></div>
       <div class="st" id="liveSt">Apunta a los tubos y mantén el teléfono firme</div>
     </div>
+    <canvas id="minimap" width="240" height="240" hidden></canvas>
     <div class="cam-bar">
       <button id="btnCamBack" aria-label="Cancelar">Cancelar</button>
       <button id="btnShutter" aria-label="Tomar foto"></button>
@@ -296,8 +302,9 @@ function toast(msg){
 function busy(on, txt){ $("busy").hidden = !on; if(txt) $("busyTxt").textContent = txt; }
 
 /* ---------------- Cámara ---------------- */
-async function openCamera(live){
-  S.liveMode = live === true;
+async function openCamera(mode){
+  S.camMode = mode || "photo";
+  S.liveMode = S.camMode === "live";
   $("camNotice").hidden = true;
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ camFallback("Este navegador no permite la cámara en vivo aquí."); return; }
   try{
@@ -309,8 +316,9 @@ async function openCamera(live){
     const v = $("video"); v.srcObject = stream;
     show("scrCam");
     await v.play().catch(()=>{});
-    setLiveUI(S.liveMode);
-    if(S.liveMode) startLive();
+    setLiveUI(S.camMode !== "photo");
+    if(S.camMode === "live") startLive();
+    if(S.camMode === "sweep") startSweep();
     try{
       const caps = S.track.getCapabilities ? S.track.getCapabilities() : {};
       if(caps.torch){ $("btnTorch").hidden = false; $("torchSpacer").hidden = true; }
@@ -331,7 +339,7 @@ function camFallback(reason){
   n.hidden = false;
 }
 function stopCamera(){
-  stopLive();
+  stopLive(); stopSweep();
   if(S.stream){ S.stream.getTracks().forEach(t=>t.stop()); }
   S.stream = null; S.track = null;
   $("btnTorch").hidden = true; $("btnTorch").setAttribute("aria-pressed","false"); $("torchSpacer").hidden = false;
@@ -370,6 +378,12 @@ function setLiveUI(on){
   $("overlay").hidden = !on; $("liveHud").hidden = !on;
   $("btnShutter").hidden = on; $("btnFinish").hidden = !on;
   $("liveNum").textContent = "0";
+  $("minimap").hidden = !(on && S.camMode === "sweep");
+  $("liveLbl").textContent = S.camMode === "sweep" ? "Recorrido · tubos mapeados" : "Contando en vivo";
+  $("liveSt").className = "st";
+  $("liveSt").textContent = S.camMode === "sweep"
+    ? "Empieza arriba a la izquierda y recorre la primera franja hacia la derecha, despacio"
+    : "Apunta a los tubos y mantén el teléfono firme";
 }
 function startLive(){
   S.tracks = []; S.liveFrames = 0; S.liveOn = true; S.liveBusy = false;
@@ -465,6 +479,343 @@ function drawOverlay(){
   });
 }
 
+/* =================================================================
+   MODO RECORRIDO — mapa global de la pila
+   1. Movimiento de cámara entre cuadros: flujo óptico Lucas‑Kanade
+      (ida y vuelta) → escala + traslación robustas por mediana.
+   2. Cada tubo detectado se ubica en coordenadas globales del mapa.
+   3. Corrección de deriva: se alinea con los tubos ya confirmados.
+   4. Un tubo se confirma (y se numera) al verse en ≥3 cuadros.
+   5. Cuadros clave en JPEG → mosaico final numerado.
+   ================================================================= */
+const SWEEP_MAX = 560;
+const med = a => { if(!a.length) return 0; const b = a.slice().sort((p,q)=>p-q); return b[Math.floor(b.length/2)]; };
+/* Detección en un Web Worker con su propia copia de OpenCV:
+   así el rastreo de movimiento (hilo principal) nunca se bloquea. */
+function getDetectWorker(){
+  if(S.detWorker !== undefined) return S.detWorker;
+  try{
+    const code = `
+      ${detect.toString()}
+      let ready = false; const queue = [];
+      function done(){ if(ready) return; ready = true; postMessage({ready:true}); queue.splice(0).forEach(run); }
+      function run(m){
+        try{
+          const res = detect(m.img, m.cfg);
+          postMessage({id:m.id, kept:res.kept.map(d=>({x:d.x, y:d.y, r:d.r, edge:d.edge, conf:d.conf}))});
+        }catch(err){ postMessage({id:m.id, error:String(err && err.message || err)}); }
+      }
+      onmessage = e => { if(ready) run(e.data); else queue.push(e.data); };
+      try{ importScripts(${JSON.stringify(OPENCV_URL)}); }catch(err){ postMessage({fatal:String(err)}); }
+      const t = setInterval(()=>{
+        const c = self.cv;
+        if(!c) return;
+        if(c.Mat){ clearInterval(t); done(); return; }
+        if(c instanceof Promise && !c._w){ c._w = 1; c.then(m=>{ self.cv = m; }); }
+      }, 100);
+    `;
+    const url = URL.createObjectURL(new Blob([code], {type:"text/javascript"}));
+    const w = new Worker(url);
+    S.detWorker = {w, ready:false, failed:false};
+    w.onmessage = e => {
+      const m = e.data;
+      if(m.ready){ S.detWorker.ready = true; return; }
+      if(m.fatal){ S.detWorker.failed = true; console.warn("worker", m.fatal); return; }
+      onWorkerResult(m);
+    };
+    w.onerror = e => { console.warn("worker error", e.message); S.detWorker.failed = true; };
+  }catch(e){ console.warn("sin worker", e); S.detWorker = null; }
+  return S.detWorker;
+}
+function onWorkerResult(m){
+  const sw = S.sw;
+  if(!sw || !sw.on) return;
+  const job = sw.jobs[m.id]; delete sw.jobs[m.id];
+  sw.pending = false;
+  if(!job || m.error){ if(m.error) console.warn("detect", m.error); return; }
+  integrateSweep(m.kept, job.W, job.H, job.pose);
+  sw.lastDets = m.kept.length; sw.detCount++;
+}
+function startSweep(){
+  S.sw = { on:true, pose:{s:1, ox:0, oy:0}, prevGray:null, vel:{x:0,y:0}, map:[], nextId:1,
+           keyframes:[], lastKF:null, frames:0, lostFor:0, status:"ok", t0:performance.now(), medR:0, W:0, H:0,
+           jobs:{}, jobId:0, discarded:0, pending:false, lastDets:0, detCount:0, canvas:document.createElement("canvas") };
+  getDetectWorker();
+  const tick = () => {
+    if(!S.sw || !S.sw.on) return;
+    if(S.cvReady){ try{ sweepStep(); }catch(e){ console.warn("sweep", e); } }
+    else $("liveSt").textContent = "Cargando motor OpenCV…";
+    S.swTimer = setTimeout(tick, 25);
+  };
+  tick();
+}
+function stopSweep(){
+  if(S.sw){
+    S.sw.on = false;
+    if(S.sw.prevGray){ S.sw.prevGray.delete(); S.sw.prevGray = null; }
+  }
+  clearTimeout(S.swTimer);
+}
+function sweepStep(){
+  const v = $("video"), sw = S.sw;
+  if(!v.videoWidth) return;
+  const sc = Math.min(1, SWEEP_MAX/Math.max(v.videoWidth, v.videoHeight));
+  const c = sw.canvas;
+  c.width = Math.round(v.videoWidth*sc); c.height = Math.round(v.videoHeight*sc);
+  const ctx = c.getContext("2d", {willReadFrequently:true});
+  ctx.drawImage(v, 0, 0, c.width, c.height);
+  const W = c.width, H = c.height; sw.W = W; sw.H = H;
+  const img = ctx.getImageData(0, 0, W, H);
+  const src = cv.matFromImageData(img), gray = new cv.Mat();
+  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY); src.delete();
+
+  // 1. movimiento de cámara
+  let ok = true;
+  if(sw.prevGray){
+    const m = estimateMotion(sw.prevGray, gray, W, sw.vel);
+    if(m){
+      const P = sw.pose;
+      P.ox -= P.s*m.tx/m.k; P.oy -= P.s*m.ty/m.k; P.s /= m.k;
+      sw.vel = {x:m.tx, y:m.ty};
+      sw.status = m.speed > 0.05 ? "fast" : "ok";
+      sw.lostFor = 0;
+    }else{ ok = false; sw.lostFor++; sw.status = "lost"; sw.vel = {x:0,y:0}; }
+  }
+  if(ok){
+    if(sw.prevGray) sw.prevGray.delete();
+    sw.prevGray = gray;                 // si se pierde, se sigue comparando contra el último cuadro bueno
+    addKeyframe(c);
+    // 2. detección (en paralelo) con la posición de este cuadro
+    const cfg = Object.assign(readSettings(), {fast:true, uniform:true});
+    const pose = Object.assign({}, sw.pose);
+    const wk = S.detWorker;
+    if(wk && wk.ready && !wk.failed){
+      if(!sw.pending && sw.status !== "fast"){
+        const id = ++sw.jobId;
+        sw.jobs[id] = {pose, W, H}; sw.pending = true;
+        wk.w.postMessage({id, img, cfg}, [img.data.buffer]);
+      }
+    }else if((!wk || wk.failed || performance.now()-sw.t0 > 15000) && sw.frames % 4 === 0 && sw.status !== "fast"){
+      // sin worker: detección en el hilo principal cada 4 cuadros
+      const dets = detect(c, cfg).kept;
+      integrateSweep(dets, W, H, pose);
+      sw.lastDets = dets.length; sw.detCount++;
+    }
+  }else gray.delete();
+  sw.frames++;
+
+  // 3. interfaz
+  const n = sw.map.filter(m=>m.ok).length;
+  $("liveNum").textContent = n;
+  const st = $("liveSt");
+  if(sw.status === "lost"){
+    st.className = "st bad";
+    st.innerHTML = "<b>Rastreo perdido</b><br>Regresa despacio a la zona anterior";
+    if(sw.lostFor === 1 && navigator.vibrate) navigator.vibrate(120);
+  }else if(sw.status === "fast"){
+    st.className = "st warn"; st.innerHTML = "<b>Más despacio</b><br>no se cuenta mientras vas rápido";
+  }else if(S.detWorker && !S.detWorker.ready && !S.detWorker.failed && performance.now()-sw.t0 < 15000){
+    st.className = "st warn"; st.innerHTML = "<b>Preparando detector…</b><br>puedes empezar a apuntar";
+  }else{
+    st.className = "st";
+    st.innerHTML = "<b>Rastreo OK</b><br>" + sw.lastDets + " en cuadro · " + Math.round((performance.now()-sw.t0)/1000) + " s";
+  }
+  drawSweepOverlay();
+  drawMinimap();
+}
+function estimateMotion(prev, cur, W, vel){
+  const p0 = new cv.Mat(), p1 = new cv.Mat(), pb = new cv.Mat();
+  const st = new cv.Mat(), er = new cv.Mat(), st2 = new cv.Mat(), er2 = new cv.Mat();
+  const none = new cv.Mat();
+  try{
+    cv.goodFeaturesToTrack(prev, p0, 300, 0.01, Math.max(6, W/70), none, 5);
+    const n = p0.rows;
+    if(n < 15) return null;
+    // predicción con la velocidad anterior (evita confundir un tubo con el vecino en una pila periódica)
+    p0.copyTo(p1);
+    const a = p0.data32F, g = p1.data32F;
+    for(let i=0;i<n;i++){ g[i*2] += vel.x; g[i*2+1] += vel.y; }
+    const win = new cv.Size(21,21);
+    const crit = new cv.TermCriteria(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 30, 0.01);
+    const USE_INIT = cv.OPTFLOW_USE_INITIAL_FLOW !== undefined ? cv.OPTFLOW_USE_INITIAL_FLOW : 4;
+    cv.calcOpticalFlowPyrLK(prev, cur, p0, p1, st, er, win, 3, crit, USE_INIT);
+    cv.calcOpticalFlowPyrLK(cur, prev, p1, pb, st2, er2, win, 3, crit);   // verificación de ida y vuelta
+    const b = p1.data32F, c = pb.data32F, s1 = st.data, s2 = st2.data;
+    const A = [], B = [];
+    for(let i=0;i<n;i++){
+      if(!s1[i] || !s2[i]) continue;
+      if(Math.hypot(c[i*2]-a[i*2], c[i*2+1]-a[i*2+1]) > 1.0) continue;
+      A.push([a[i*2], a[i*2+1]]); B.push([b[i*2], b[i*2+1]]);
+    }
+    if(A.length < 12) return null;
+    const dx = med(A.map((p,i)=>B[i][0]-p[0])), dy = med(A.map((p,i)=>B[i][1]-p[1]));
+    const tol = Math.max(2, W*0.008);
+    const inl = [];
+    for(let i=0;i<A.length;i++) if(Math.hypot(B[i][0]-A[i][0]-dx, B[i][1]-A[i][1]-dy) < tol*3) inl.push(i);
+    if(inl.length < 10 || inl.length < A.length*0.45) return null;
+    // escala (acercar/alejar) por mediana de razones de distancias entre pares
+    const ratios = [];
+    for(let t=0; t<Math.min(300, inl.length*4); t++){
+      const i = inl[(t*7919) % inl.length], j = inl[(t*104729 + 13) % inl.length];
+      const d0 = Math.hypot(A[i][0]-A[j][0], A[i][1]-A[j][1]);
+      if(d0 < W*0.12) continue;
+      ratios.push(Math.hypot(B[i][0]-B[j][0], B[i][1]-B[j][1]) / d0);
+    }
+    let k = ratios.length >= 10 ? med(ratios) : 1;
+    if(Math.abs(k-1) < 0.004) k = 1;
+    k = Math.max(0.88, Math.min(1.14, k));
+    const tx = med(inl.map(i=>B[i][0] - k*A[i][0])), ty = med(inl.map(i=>B[i][1] - k*A[i][1]));
+    return {k, tx, ty, speed: Math.hypot(dx,dy)/W, inliers: inl.length};
+  }finally{
+    for(const m of [p0,p1,pb,st,er,st2,er2,none]) m.delete();
+  }
+}
+function integrateSweep(dets, W, H, pose){
+  const sw = S.sw, P = pose || sw.pose, cur = sw.pose;
+  const vx0 = P.ox, vy0 = P.oy, vx1 = P.ox + P.s*W, vy1 = P.oy + P.s*H;
+  // sólo tubos completos dentro del cuadro (los cortados en el borde dan posiciones malas)
+  const G = dets.filter(d => d.x-d.r > 2 && d.y-d.r > 2 && d.x+d.r < W-2 && d.y+d.r < H-2)
+                .map(d => ({gx:P.s*d.x+P.ox, gy:P.s*d.y+P.oy, gr:P.s*d.r, edge:d.edge}));
+  const pad = sw.medR*P.s*2 || W*0.1;
+  let inView = sw.map.filter(m => m.gx > vx0-pad && m.gx < vx1+pad && m.gy > vy0-pad && m.gy < vy1+pad);
+  const nearest = (g, list) => {
+    let best = null, bd = 1e9;
+    for(const m of list){ const d = Math.hypot(m.gx-g.gx, m.gy-g.gy); if(d < bd){ bd = d; best = m; } }
+    return [best, bd];
+  };
+  // corrección de deriva contra los tubos ya confirmados
+  const conf = inView.filter(m=>m.ok), offs = [];
+  for(const g of G){ const [m, d] = nearest(g, conf); if(m && d < 0.5*m.gr) offs.push([m.gx-g.gx, m.gy-g.gy]); }
+  if(offs.length >= 4){
+    const mx = med(offs.map(o=>o[0]))*0.7, my = med(offs.map(o=>o[1]))*0.7;
+    P.ox += mx; P.oy += my;
+    if(P !== cur){ cur.ox += mx; cur.oy += my; }   // la misma deriva afecta a la pose actual
+    for(const g of G){ g.gx += mx; g.gy += my; }
+  }
+  const matched = new Set();
+  for(const g of G){
+    const [m, d] = nearest(g, inView.filter(x=>!matched.has(x)));
+    if(m && d < 0.55*Math.max(m.gr, g.gr)){
+      const a = m.ok ? 0.15 : 0.4;
+      m.gx += (g.gx-m.gx)*a; m.gy += (g.gy-m.gy)*a; m.gr += (g.gr-m.gr)*a;
+      m.hits++; m.edge = Math.max(m.edge, g.edge); matched.add(m);
+      if(!m.ok && m.hits >= 3) confirmTube(m);
+    }else{
+      const nm = {gx:g.gx, gy:g.gy, gr:g.gr, edge:g.edge, hits:1, views:0, ok:false};
+      sw.map.push(nm); inView.push(nm); matched.add(nm);
+    }
+  }
+  // candidatos que estuvieron a la vista varias veces sin repetirse → falsos, se borran
+  const dead = new Set();
+  for(const m of inView){
+    if(m.ok || m.dead) continue;
+    const fully = m.gx-m.gr > vx0 && m.gy-m.gr > vy0 && m.gx+m.gr < vx1 && m.gy+m.gr < vy1;
+    if(fully) m.views++;
+    if(m.views >= 5 && m.hits/m.views < 0.4) dead.add(m);
+  }
+  sw.discarded += dead.size + sw.map.filter(m=>m.dead).length;
+  if(dead.size || sw.map.some(m=>m.dead)) sw.map = sw.map.filter(m => !dead.has(m) && !m.dead);
+}
+function confirmTube(m){
+  const sw = S.sw, conf = sw.map.filter(x=>x.ok);
+  // tamaño consistente con la pila (mismo diámetro)
+  if(conf.length >= 10){
+    const R = med(conf.map(x=>x.gr));
+    if(m.gr < R*0.65 || m.gr > R*1.5){ m.dead = true; return; }
+  }
+  // no duplicar un tubo ya contado (deriva residual)
+  for(const x of conf) if(Math.hypot(x.gx-m.gx, x.gy-m.gy) < 0.8*Math.max(x.gr, m.gr)){ m.dead = true; return; }
+  m.ok = true; m.id = sw.nextId++;
+  if(sw.nextId % 10 === 0 || !sw.medR) sw.medR = med(conf.concat([m]).map(x=>x.gr/S.sw.pose.s));
+}
+function addKeyframe(c){
+  const sw = S.sw, P = sw.pose;
+  const cx = P.ox + P.s*c.width/2, cy = P.oy + P.s*c.height/2;
+  if(sw.lastKF && Math.hypot(cx-sw.lastKF.cx, cy-sw.lastKF.cy) < 0.2*P.s*c.width) return;
+  const kf = {ox:P.ox, oy:P.oy, s:P.s, w:c.width, h:c.height, blob:null};
+  sw.keyframes.push(kf); sw.lastKF = {cx, cy};
+  kf.ready = new Promise(res => c.toBlob(b => { kf.blob = b; res(); }, "image/jpeg", 0.82));
+}
+function viewMap(){
+  const ov = $("overlay"), cw = ov.clientWidth, ch = ov.clientHeight, sw = S.sw;
+  const s = Math.min(cw/sw.W, ch/sw.H);
+  return {cw, ch, s, ox:(cw - sw.W*s)/2, oy:(ch - sw.H*s)/2};
+}
+function drawSweepOverlay(){
+  const ov = $("overlay"), dpr = window.devicePixelRatio || 1, sw = S.sw, P = sw.pose;
+  const V = viewMap();
+  if(ov.width !== Math.round(V.cw*dpr) || ov.height !== Math.round(V.ch*dpr)){ ov.width = Math.round(V.cw*dpr); ov.height = Math.round(V.ch*dpr); }
+  const g = ov.getContext("2d");
+  g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,V.cw,V.ch);
+  const toScr = m => [V.ox + (m.gx-P.ox)/P.s*V.s, V.oy + (m.gy-P.oy)/P.s*V.s, m.gr/P.s*V.s];
+  for(const m of sw.map){
+    const [x,y,r] = toScr(m);
+    if(x < -r || y < -r || x > V.cw+r || y > V.ch+r) continue;
+    g.beginPath(); g.arc(x,y,r,0,Math.PI*2);
+    if(m.ok){
+      g.fillStyle = "#3DDC9733"; g.fill(); g.lineWidth = 2; g.strokeStyle = "#3DDC97"; g.stroke();
+      const fs = Math.max(9, Math.min(r*0.75, 24));
+      g.font = "700 " + fs + 'px "Barlow Condensed","Arial Narrow",sans-serif'; g.textAlign = "center"; g.textBaseline = "middle";
+      g.lineWidth = 3; g.strokeStyle = "rgba(0,0,0,.8)"; g.strokeText(String(m.id), x, y);
+      g.fillStyle = "#fff"; g.fillText(String(m.id), x, y);
+    }else{
+      g.setLineDash([4,4]); g.lineWidth = 2; g.strokeStyle = "#FF7A2E"; g.stroke(); g.setLineDash([]);
+    }
+  }
+  if(sw.status === "lost"){ g.fillStyle = "rgba(255,77,94,.18)"; g.fillRect(V.ox, V.oy, sw.W*V.s, sw.H*V.s); }
+}
+function drawMinimap(){
+  const mm = $("minimap"), g = mm.getContext("2d"), sw = S.sw, P = sw.pose;
+  const Wm = mm.width, Hm = mm.height;
+  g.clearRect(0,0,Wm,Hm);
+  const conf = sw.map.filter(m=>m.ok);
+  let x0 = P.ox, y0 = P.oy, x1 = P.ox + P.s*sw.W, y1 = P.oy + P.s*sw.H;
+  for(const m of conf){ x0 = Math.min(x0, m.gx-m.gr); y0 = Math.min(y0, m.gy-m.gr); x1 = Math.max(x1, m.gx+m.gr); y1 = Math.max(y1, m.gy+m.gr); }
+  const z = Math.min((Wm-16)/(x1-x0), (Hm-16)/(y1-y0));
+  const ox = (Wm - (x1-x0)*z)/2, oy = (Hm - (y1-y0)*z)/2;
+  g.fillStyle = "#3DDC97";
+  for(const m of conf){ g.beginPath(); g.arc(ox+(m.gx-x0)*z, oy+(m.gy-y0)*z, Math.max(1.2, m.gr*z*0.8), 0, Math.PI*2); g.fill(); }
+  g.lineWidth = 3; g.strokeStyle = sw.status === "lost" ? "#FF4D5E" : "#fff";
+  g.strokeRect(ox+(P.ox-x0)*z, oy+(P.oy-y0)*z, P.s*sw.W*z, P.s*sw.H*z);
+}
+async function finishSweep(){
+  const sw = S.sw;
+  if(!sw) return;
+  stopCamera();
+  busy(true, "Armando el mapa de la pila…");
+  try{
+    const kfs = sw.keyframes;
+    await Promise.all(kfs.map(k=>k.ready));
+    const conf = sw.map.filter(m=>m.ok);
+    if(!kfs.length){ busy(false); toast("No se registró ningún cuadro"); show("scrStart"); return; }
+    let x0=1e9, y0=1e9, x1=-1e9, y1=-1e9;
+    for(const k of kfs){ x0 = Math.min(x0,k.ox); y0 = Math.min(y0,k.oy); x1 = Math.max(x1,k.ox+k.s*k.w); y1 = Math.max(y1,k.oy+k.s*k.h); }
+    const gw = x1-x0, gh = y1-y0;
+    let z = Math.min(1.5, 3600/Math.max(gw,gh));
+    if(gw*gh*z*z > 12e6) z = Math.sqrt(12e6/(gw*gh));   // límite de canvas en teléfonos
+    const mosaic = document.createElement("canvas");
+    mosaic.width = Math.max(1, Math.round(gw*z)); mosaic.height = Math.max(1, Math.round(gh*z));
+    const g = mosaic.getContext("2d");
+    g.fillStyle = "#0B0F12"; g.fillRect(0,0,mosaic.width,mosaic.height);
+    for(const k of kfs){
+      if(!k.blob) continue;
+      const bmp = await createImageBitmap(k.blob);
+      g.drawImage(bmp, (k.ox-x0)*z, (k.oy-y0)*z, k.s*k.w*z, k.s*k.h*z);
+      bmp.close && bmp.close();
+    }
+    S.mode = "sweep";
+    S.full = mosaic; S.work = mosaic; S.k = 1;
+    S.dets = conf.map(m => ({x:(m.gx-x0)*z, y:(m.gy-y0)*z, r:m.gr*z, conf:Math.min(1, 0.5+m.hits*0.06),
+                             edge:m.edge, votes:m.hits, state:"auto"}));
+    S.rejected = []; S.history = []; S.liveResult = null; S.sampleTruth = S.sweepTruth ?? null;
+    S.stats = {sweep:true, discarded:sw.discarded, frames:sw.frames, secs:Math.round((performance.now()-sw.t0)/1000), kfs:kfs.length};
+    S.zoom = 1; applyZoom();
+    show("scrResult");
+  }catch(e){ console.error(e); toast("Error al armar el mapa: " + (e.message||e)); }
+  busy(false);
+  render();
+}
+
 /* ---------------- Carga de imagen ---------------- */
 function scaledCanvas(src, maxDim){
   const w = src.naturalWidth || src.videoWidth || src.width;
@@ -477,6 +828,7 @@ function scaledCanvas(src, maxDim){
   return c;
 }
 function loadSource(src){
+  S.mode = "photo";
   S.full = scaledCanvas(src, 2000);
   S.work = scaledCanvas(S.full, 1100);
   S.k = S.full.width / S.work.width;
@@ -530,7 +882,7 @@ function detect(canvas, cfg){
   const mats = [];
   const M = m => (mats.push(m), m);
   try{
-    const src  = M(cv.imread(canvas));
+    const src  = M(canvas.data ? cv.matFromImageData(canvas) : cv.imread(canvas));
     const gray = M(new cv.Mat()); cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
     const eq   = M(new cv.Mat());
     try{ const cl = new cv.CLAHE(2.0, new cv.Size(8,8)); cl.apply(gray, eq); cl.delete(); }
@@ -787,7 +1139,11 @@ function detect(canvas, cfg){
 
 /* ---------------- Render ---------------- */
 const view = $("view");
-function isDoubt(d){ return d.state==="auto" && (d.conf < 0.62 || d.edge < readSettings().minEdge + 0.08); }
+function isDoubt(d){
+  if(d.state!=="auto") return false;
+  if(S.mode==="sweep") return d.votes < 4;
+  return d.conf < 0.62 || d.edge < readSettings().minEdge + 0.08;
+}
 function orderDets(){
   const act = S.dets.filter(d=>d.state!=="removed");
   if(!act.length) return;
@@ -807,10 +1163,11 @@ function render(){
   const chips = [];
   chips.push(`<span class="chip ok">Confianza media <b>${Math.round(avg*100)}%</b></span>`);
   chips.push(`<span class="chip ${doubt?"warn":"ok"}">Dudosos <b>${doubt}</b></span>`);
-  chips.push(`<span class="chip">Invisibles eliminados <b>${S.rejected.length}</b></span>`);
+  chips.push(`<span class="chip">${S.mode==="sweep"?"Falsos descartados":"Invisibles eliminados"} <b>${S.mode==="sweep"&&S.stats?S.stats.discarded:S.rejected.length}</b></span>`);
   if(removed) chips.push(`<span class="chip bad">Quitados <b>${removed}</b></span>`);
   if(added) chips.push(`<span class="chip ok">Agregados <b>${added}</b></span>`);
-  if(S.stats) chips.push(`<span class="chip">${S.stats.cands} candidatos · ${S.stats.ms} ms</span>`);
+  if(S.stats && S.stats.sweep) chips.push(`<span class="chip">Recorrido ${S.stats.secs} s · ${S.stats.frames} cuadros · ${S.stats.kfs} en el mapa</span>`);
+  else if(S.stats) chips.push(`<span class="chip">${S.stats.cands} candidatos · ${S.stats.ms} ms</span>`);
   if(S.liveResult!=null) chips.push(`<span class="chip ${S.liveResult===active.length?"ok":"warn"}">En vivo: <b>${S.liveResult}</b> · foto final: <b>${active.length}</b></span>`);
   if(S.sampleTruth!=null) chips.push(`<span class="chip ${active.length===S.sampleTruth?"ok":"bad"}">Ejemplo: ${S.sampleTruth} tubos reales</span>`);
   $("chips").innerHTML = chips.join("");
@@ -822,7 +1179,8 @@ function drawView(){
   view.width = S.full.width; view.height = S.full.height;
   const g = view.getContext("2d");
   g.drawImage(S.full,0,0);
-  const k = S.k, lw = Math.max(2, S.full.width/420);
+  const rr = S.dets.map(d=>d.r*S.k).sort((a,b)=>a-b), mr = rr[Math.floor(rr.length/2)];
+  const k = S.k, lw = mr ? Math.max(1.5, Math.min(S.full.width/420, mr*0.09)) : Math.max(2, S.full.width/420);
   g.fillStyle = "rgba(0,0,0,.18)"; g.fillRect(0,0,view.width,view.height);
   if($("sShowRej").checked){
     g.setLineDash([lw*1.2,lw*1.8]); g.lineWidth = lw*0.8; g.strokeStyle = "rgba(170,182,190,.8)";
@@ -842,7 +1200,7 @@ function drawView(){
     const col = d.state==="manual" ? "#3DDC97" : isDoubt(d) ? "#FFC53D" : "#FF7A2E";
     g.fillStyle = col + "33"; g.fill();
     g.lineWidth = lw*1.3; g.strokeStyle = col; g.stroke();
-    const fs = Math.max(11, Math.min(r*0.8, 44));
+    const fs = Math.max(9, Math.min(r*0.8, 44));
     g.font = `700 ${fs}px "Barlow Condensed", "Arial Narrow", sans-serif`;
     g.textAlign="center"; g.textBaseline="middle";
     g.lineWidth = Math.max(2, fs/6); g.strokeStyle="rgba(0,0,0,.85)"; g.strokeText(String(n),x,y);
@@ -884,18 +1242,21 @@ function applyZoom(){
 }
 
 /* ---------------- Ejemplo sintético ---------------- */
-function makeSample(){
-  const W=1200, H=900, c=document.createElement("canvas"); c.width=W; c.height=H;
+function makeSample(o){
+  o = o || {};
+  const W=o.W||1200, H=o.H||900, c=document.createElement("canvas"); c.width=W; c.height=H;
   const g=c.getContext("2d");
   const bg=g.createLinearGradient(0,0,W,H); bg.addColorStop(0,"#3a3f44"); bg.addColorStop(1,"#1b1e21");
   g.fillStyle=bg; g.fillRect(0,0,W,H);
   let seed=7; const rnd=()=>(seed=(seed*16807)%2147483647)/2147483647;
-  const R=52, gap=5, cx=W/2, cy=H/2; let count=0;
-  for(let row=-6; row<=6; row++){
-    for(let col=-8; col<=8; col++){
+  const R=o.R||52, gap=5, cx=W/2, cy=H/2; let count=0;
+  const nr = Math.ceil(H/(2*R*0.866))+1, nc = Math.ceil(W/(2*R))+1;
+  for(let row=-nr; row<=nr; row++){
+    for(let col=-nc; col<=nc; col++){
       const x = cx + col*(2*R+gap) + (row&1 ? R+gap/2 : 0);
       const y = cy + row*(2*R+gap)*0.866;
-      if(((x-cx)/(W*0.36))**2 + ((y-cy)/(H*0.36))**2 > 1) continue;
+      if(o.rect){ if(x-R < W*0.06 || x+R > W*0.94 || y-R < H*0.08 || y+R > H*0.92) continue; }
+      else if(((x-cx)/(W*0.36))**2 + ((y-cy)/(H*0.36))**2 > 1) continue;
       const r = R*(0.96+rnd()*0.06), tone = 150+rnd()*60;
       const gr=g.createRadialGradient(x-r*0.3,y-r*0.3,r*0.1,x,y,r);
       gr.addColorStop(0,`rgb(${tone+30},${tone+34},${tone+38})`); gr.addColorStop(1,`rgb(${tone-60},${tone-54},${tone-48})`);
@@ -909,7 +1270,7 @@ function makeSample(){
   }
   // círculos "invisibles" casi sin contraste: deben eliminarse
   g.lineWidth=1.5; g.strokeStyle="rgba(255,255,255,.035)";
-  for(const [x,y] of [[90,110],[1110,120],[100,800],[1100,790]]){ g.beginPath(); g.arc(x,y,R,0,7); g.stroke(); }
+  if(!o.rect) for(const [x,y] of [[90,110],[1110,120],[100,800],[1100,790]]){ g.beginPath(); g.arc(x,y,R,0,7); g.stroke(); }
   const id=g.getImageData(0,0,W,H), p=id.data;
   for(let i=0;i<p.length;i+=4){ const n=(rnd()-0.5)*26; p[i]+=n; p[i+1]+=n; p[i+2]+=n; }
   g.putImageData(id,0,0);
@@ -917,9 +1278,10 @@ function makeSample(){
 }
 
 /* ---------------- Eventos ---------------- */
-$("btnStart").addEventListener("click", ()=>openCamera(false));
-$("btnLive").addEventListener("click", ()=>openCamera(true));
-$("btnFinish").addEventListener("click", capture);
+$("btnStart").addEventListener("click", ()=>openCamera("photo"));
+$("btnLive").addEventListener("click", ()=>openCamera("live"));
+$("btnSweep").addEventListener("click", ()=>openCamera("sweep"));
+$("btnFinish").addEventListener("click", ()=>{ if(S.camMode==="sweep") finishSweep(); else capture(); });
 $("btnCamBack").addEventListener("click", ()=>{ stopCamera(); show("scrStart"); });
 $("btnShutter").addEventListener("click", capture);
 $("btnTorch").addEventListener("click", toggleTorch);
@@ -927,11 +1289,14 @@ $("fileCam").addEventListener("change", onFile);
 $("fileGallery").addEventListener("change", onFile);
 for(const l of document.querySelectorAll("label.btn")) l.addEventListener("keydown", e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); $(l.htmlFor).click(); } });
 $("btnSample").addEventListener("click", ()=>{ const s=makeSample(); S.sampleTruth=s.count; S.liveResult=null; loadSource(s.canvas); });
-$("btnNew").addEventListener("click", ()=>{ show("scrStart"); openCamera(S.liveMode); });
+$("btnNew").addEventListener("click", ()=>{ show("scrStart"); openCamera(S.camMode); });
 $("btnHome").addEventListener("click", ()=>show("scrStart"));
 $("btnUndo").addEventListener("click", undo);
 $("btnZoom").addEventListener("click", ()=>{ S.zoom = S.zoom>=3 ? 1 : S.zoom+1; applyZoom(); });
-$("btnReanalyze").addEventListener("click", ()=>{ if(S.work) runAnalysis(S.work); });
+$("btnReanalyze").addEventListener("click", ()=>{
+  if(S.mode==="sweep"){ toast("En recorrido el conteo viene del mapa: corrige tocando los círculos"); return; }
+  if(S.work) runAnalysis(S.work);
+});
 $("sShowRej").addEventListener("change", drawView);
 for(const id of ["sSens","sEdge","sRmin","sRmax"]) $(id).addEventListener("input", syncOutputs);
 view.addEventListener("click", onTap);
