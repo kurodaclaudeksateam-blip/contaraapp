@@ -9,6 +9,12 @@ App web (un solo `index.html`) para contar tubos / círculos en una foto tomada 
 
 Si el navegador no permite la cámara en vivo, **Cámara del sistema** abre la cámara nativa del teléfono.
 
+### Modo en vivo
+**Contar en vivo mientras apuntas** detecta en cada cuadro de video (a 560 px, 2–4 análisis/s) y dibuja los círculos encima de la imagen con su número.
+- Cada círculo se sigue entre cuadros. Sólo se cuenta cuando aparece en al menos 3 cuadros y en la mitad del tiempo, así los falsos de un solo cuadro no suben el conteo.
+- Lo que sale del encuadre se olvida a los pocos cuadros. El conteo es de lo que está en pantalla, no un acumulado de un barrido.
+- **Terminar** toma la foto final, la analiza a resolución completa y muestra `En vivo: N · foto final: M` para comparar, con corrección por toque.
+
 ## Cómo detecta
 - OpenCV.js 4.10 (`@techstark/opencv-js`, WebAssembly).
 - Preprocesado: CLAHE + mediana + gaussiano.

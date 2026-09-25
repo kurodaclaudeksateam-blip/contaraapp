@@ -62,7 +62,7 @@ h1 em{font-style:normal;color:var(--accent)}
 
 /* ---------- cámara ---------- */
 #scrCam{position:fixed;inset:0;background:#000;z-index:20}
-#video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
 .reticle{position:absolute;inset:12% 8% 22%;border:2px solid rgba(255,255,255,.55);border-radius:18px;pointer-events:none}
 .reticle::before{content:"Encuadra los tubos de frente, con buena luz";position:absolute;top:-34px;left:0;right:0;text-align:center;color:#fff;font:500 13px var(--f-body);text-shadow:0 1px 3px #000}
 .cam-bar{position:absolute;left:0;right:0;bottom:0;padding:18px 20px calc(22px + env(safe-area-inset-bottom,0px));display:flex;align-items:center;justify-content:space-between;background:linear-gradient(transparent,rgba(0,0,0,.7))}
@@ -70,6 +70,16 @@ h1 em{font-style:normal;color:var(--accent)}
 #btnShutter{width:78px;height:78px;min-width:78px;padding:0;border-radius:50%;background:#fff;border:5px solid rgba(255,255,255,.4);background-clip:padding-box}
 #btnShutter:active{transform:scale(.94)}
 #btnTorch[aria-pressed="true"]{background:#FFD24A;color:#000}
+#overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#scrCam.live .reticle{display:none}
+.live-hud{position:absolute;left:0;right:0;top:0;padding:calc(14px + env(safe-area-inset-top,0px)) 18px 22px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;background:linear-gradient(rgba(0,0,0,.72),transparent);color:#fff}
+.live-hud .n{font:700 64px/.85 var(--f-display);font-variant-numeric:tabular-nums;text-shadow:0 2px 8px rgba(0,0,0,.6)}
+.live-hud .l{font:600 11px/1.3 var(--f-mono);letter-spacing:.12em;text-transform:uppercase;opacity:.85}
+.live-hud .st{font:500 12px/1.4 var(--f-mono);text-align:right;opacity:.9;max-width:52%}
+.live-hud .rec{display:inline-block;width:9px;height:9px;border-radius:50%;background:#FF4D5E;margin-right:6px;animation:blink 1.2s steps(2) infinite}
+@keyframes blink{50%{opacity:.2}}
+@media (prefers-reduced-motion:reduce){.live-hud .rec{animation:none}}
+#btnFinish{background:#FF7A2E;color:#1A0D04;border-radius:999px;padding:18px 26px;font-size:16px;min-width:140px}
 
 /* ---------- resultado ---------- */
 #scrResult{padding-block:14px 110px}
@@ -118,6 +128,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="gauge" aria-hidden="true"><span></span><span></span><span></span><span class="x"></span><span></span><span></span><span class="x"></span></div>
     <div class="start-actions">
       <button id="btnStart" class="btn-primary">Iniciar y abrir cámara</button>
+      <button id="btnLive" class="btn-ghost" style="padding:16px;border-color:var(--accent)">Contar en vivo mientras apuntas</button>
       <div class="start-row">
         <label class="btn btn-ghost" for="fileCam" tabindex="0">Cámara del sistema</label>
         <label class="btn btn-ghost" for="fileGallery" tabindex="0">Galería</label>
@@ -132,9 +143,15 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <section id="scrCam" hidden>
     <video id="video" playsinline muted autoplay></video>
     <div class="reticle"></div>
+    <canvas id="overlay" hidden></canvas>
+    <div class="live-hud" id="liveHud" hidden>
+      <div><div class="l"><span class="rec"></span>Contando en vivo</div><div class="n" id="liveNum">0</div></div>
+      <div class="st" id="liveSt">Apunta a los tubos y mantén el teléfono firme</div>
+    </div>
     <div class="cam-bar">
       <button id="btnCamBack" aria-label="Cancelar">Cancelar</button>
       <button id="btnShutter" aria-label="Tomar foto"></button>
+      <button id="btnFinish" hidden>Terminar</button>
       <button id="btnTorch" aria-pressed="false" aria-label="Linterna" hidden>Luz</button>
       <span id="torchSpacer" style="min-width:64px"></span>
     </div>
@@ -279,7 +296,8 @@ function toast(msg){
 function busy(on, txt){ $("busy").hidden = !on; if(txt) $("busyTxt").textContent = txt; }
 
 /* ---------------- Cámara ---------------- */
-async function openCamera(){
+async function openCamera(live){
+  S.liveMode = live === true;
   $("camNotice").hidden = true;
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ camFallback("Este navegador no permite la cámara en vivo aquí."); return; }
   try{
@@ -291,6 +309,8 @@ async function openCamera(){
     const v = $("video"); v.srcObject = stream;
     show("scrCam");
     await v.play().catch(()=>{});
+    setLiveUI(S.liveMode);
+    if(S.liveMode) startLive();
     try{
       const caps = S.track.getCapabilities ? S.track.getCapabilities() : {};
       if(caps.torch){ $("btnTorch").hidden = false; $("torchSpacer").hidden = true; }
@@ -311,6 +331,7 @@ function camFallback(reason){
   n.hidden = false;
 }
 function stopCamera(){
+  stopLive();
   if(S.stream){ S.stream.getTracks().forEach(t=>t.stop()); }
   S.stream = null; S.track = null;
   $("btnTorch").hidden = true; $("btnTorch").setAttribute("aria-pressed","false"); $("torchSpacer").hidden = false;
@@ -321,7 +342,9 @@ function capture(){
   const c = document.createElement("canvas");
   c.width = v.videoWidth; c.height = v.videoHeight;
   c.getContext("2d").drawImage(v,0,0);
+  const liveCount = S.liveMode ? liveStableCount() : null;
   stopCamera();
+  S.liveResult = liveCount;
   loadSource(c);
 }
 async function toggleTorch(){
@@ -336,9 +359,110 @@ function onFile(e){
   if(!f) return;
   const url = URL.createObjectURL(f);
   const img = new Image();
-  img.onload = () => { URL.revokeObjectURL(url); S.sampleTruth = null; loadSource(img); };
+  img.onload = () => { URL.revokeObjectURL(url); S.sampleTruth = null; S.liveResult = null; loadSource(img); };
   img.onerror = () => toast("No se pudo leer la imagen");
   img.src = url;
+}
+
+/* ---------------- Modo en vivo: detectar + seguir círculos cuadro a cuadro ---------------- */
+function setLiveUI(on){
+  $("scrCam").classList.toggle("live", on);
+  $("overlay").hidden = !on; $("liveHud").hidden = !on;
+  $("btnShutter").hidden = on; $("btnFinish").hidden = !on;
+  $("liveNum").textContent = "0";
+}
+function startLive(){
+  S.tracks = []; S.liveFrames = 0; S.liveOn = true; S.liveBusy = false;
+  S.liveCanvas = document.createElement("canvas");
+  if(!S.cvReady) $("liveSt").textContent = "Cargando motor OpenCV…";
+  const tick = () => {
+    if(!S.liveOn) return;
+    if(!S.liveBusy && S.cvReady) liveStep();
+    S.liveTimer = setTimeout(tick, 30);
+  };
+  tick();
+}
+function stopLive(){
+  S.liveOn = false;
+  clearTimeout(S.liveTimer);
+  setLiveUI(false);
+}
+function isStable(t){ return t.hits >= 3 && t.hits/t.age >= 0.5; }
+function liveStableCount(){ return (S.tracks||[]).filter(isStable).length; }
+function liveStep(){
+  const v = $("video");
+  if(!v.videoWidth) return;
+  S.liveBusy = true;
+  const LIVE_MAX = 560;  // resolución de análisis en vivo (la foto final se analiza a 1100 px)
+  const sc = Math.min(1, LIVE_MAX/Math.max(v.videoWidth, v.videoHeight));
+  const c = S.liveCanvas;
+  c.width = Math.round(v.videoWidth*sc); c.height = Math.round(v.videoHeight*sc);
+  c.getContext("2d").drawImage(v,0,0,c.width,c.height);
+  const t0 = performance.now();
+  let dets = [];
+  try{ dets = detect(c, Object.assign(readSettings(), {fast:true})).kept; }
+  catch(e){ console.warn("live", e); }
+  const ms = performance.now()-t0;
+  // normalizar a 0..1 del video para que el seguimiento no dependa de la escala
+  const W = c.width, H = c.height;
+  updateTracks(dets.map(d=>({x:d.x/W, y:d.y/H, r:d.r/W, conf:d.conf})), W/H);
+  S.liveFrames++;
+  $("liveNum").textContent = liveStableCount();
+  $("liveSt").textContent = dets.length + " en este cuadro · " + (1000/Math.max(ms,1)).toFixed(1) + " análisis/s" +
+    (S.liveFrames < 4 ? " · estabilizando…" : "");
+  drawOverlay();
+  S.liveBusy = false;
+}
+function updateTracks(nd, aspect){
+  const tracks = S.tracks;
+  for(const t of tracks){ t.age++; t.matched = false; }
+  // emparejar cada detección con el track más cercano (distancia en unidades de ancho)
+  const pairs = [];
+  nd.forEach((d,i)=>tracks.forEach((t,j)=>{
+    const dist = Math.hypot(d.x-t.x, (d.y-t.y)/aspect);
+    if(dist < 0.6*Math.max(d.r,t.r) && d.r/t.r > 0.7 && d.r/t.r < 1.43) pairs.push({i,j,dist});
+  }));
+  pairs.sort((a,b)=>a.dist-b.dist);
+  const usedD = new Set(), usedT = new Set();
+  for(const p of pairs){
+    if(usedD.has(p.i) || usedT.has(p.j)) continue;
+    usedD.add(p.i); usedT.add(p.j);
+    const t = tracks[p.j], d = nd[p.i], a = 0.45;
+    t.x += (d.x-t.x)*a; t.y += (d.y-t.y)*a; t.r += (d.r-t.r)*a;
+    t.hits++; t.miss = 0; t.matched = true; t.conf = d.conf;
+  }
+  nd.forEach((d,i)=>{ if(!usedD.has(i)) tracks.push({x:d.x,y:d.y,r:d.r,conf:d.conf,hits:1,age:1,miss:0,matched:true}); });
+  for(const t of tracks) if(!t.matched) t.miss++;
+  // olvidar lo que dejó de verse (salió del encuadre o fue un falso de un solo cuadro)
+  S.tracks = tracks.filter(t => t.miss <= (isStable(t) ? 6 : 1));
+}
+function drawOverlay(){
+  const ov = $("overlay"), v = $("video");
+  const dpr = window.devicePixelRatio || 1;
+  const cw = ov.clientWidth, ch = ov.clientHeight;
+  if(ov.width !== Math.round(cw*dpr) || ov.height !== Math.round(ch*dpr)){ ov.width = Math.round(cw*dpr); ov.height = Math.round(ch*dpr); }
+  const g = ov.getContext("2d");
+  g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,cw,ch);
+  // mapear coordenadas del video a la pantalla (object-fit: contain → se ve todo lo que se cuenta)
+  const vw = v.videoWidth, vh = v.videoHeight;
+  const s = Math.min(cw/vw, ch/vh), ox = (cw - vw*s)/2, oy = (ch - vh*s)/2;
+  for(const t of S.tracks){
+    if(isStable(t)) continue;
+    g.beginPath(); g.arc(ox+t.x*vw*s, oy+t.y*vh*s, t.r*vw*s, 0, Math.PI*2);
+    g.setLineDash([4,5]); g.lineWidth = 1.5; g.strokeStyle = "rgba(255,255,255,.55)"; g.stroke(); g.setLineDash([]);
+  }
+  const stable = S.tracks.filter(isStable).sort((a,b)=> (Math.round(a.y*12)-Math.round(b.y*12)) || (a.x-b.x));
+  stable.forEach((t,i)=>{
+    const x = ox+t.x*vw*s, y = oy+t.y*vh*s, r = t.r*vw*s;
+    g.beginPath(); g.arc(x,y,r,0,Math.PI*2);
+    const col = t.miss ? "#FFC53D" : "#FF7A2E";
+    g.fillStyle = col+"38"; g.fill(); g.lineWidth = 2.5; g.strokeStyle = col; g.stroke();
+    const fs = Math.max(10, Math.min(r*0.8, 30));
+    g.font = "700 " + fs + 'px "Barlow Condensed","Arial Narrow",sans-serif'; g.textAlign="center"; g.textBaseline="middle";
+    g.lineWidth = 3; g.strokeStyle = "rgba(0,0,0,.8)"; g.strokeText(String(i+1),x,y);
+    g.fillStyle = "#fff"; g.fillText(String(i+1),x,y);
+  });
 }
 
 /* ---------------- Carga de imagen ---------------- */
@@ -434,7 +558,7 @@ function detect(canvas, cfg){
       const b = Math.min(rMax, Math.round(a*1.9));
       hough(blur, cv.HOUGH_GRADIENT, 1.2, a*1.7, 100, p2s, a, b, "hg-strict");
       hough(blur, cv.HOUGH_GRADIENT, 1, a*1.7, 80, p2l, a, b, "hg-band");
-      hough(rawB, cv.HOUGH_GRADIENT, 1.2, a*1.7, 70, p2l, a, b, "hg-raw");
+      if(!cfg.fast) hough(rawB, cv.HOUGH_GRADIENT, 1.2, a*1.7, 70, p2l, a, b, "hg-raw");
       if(b >= rMax) break;
       a = Math.max(a+1, Math.round(b*0.9));
     }
@@ -470,6 +594,7 @@ function detect(canvas, cfg){
       cv.morphologyEx(bin, bin, cv.MORPH_OPEN, kern);
       contourPass(bin, inv?"otsu-inv":"otsu");
       let bs = Math.round(rMax*1.3)|1; bs = Math.max(11, Math.min(151, bs)); if(bs%2===0) bs++;
+      if(cfg.fast) continue;
       cv.adaptiveThreshold(blur, bin, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, inv?cv.THRESH_BINARY_INV:cv.THRESH_BINARY, bs, 3);
       cv.erode(bin, bin, kern);
       contourPass(bin, inv?"adapt-inv":"adapt");
@@ -545,12 +670,12 @@ function detect(canvas, cfg){
       let x=k.x, y=k.y, r=k.r;
       let e = edgeScore(x,y,r);
       // búsqueda de radio amplia (se omite si no hay nada de borde)
-      if(e.edge >= 0.12 || k.tags.size >= 2) for(let f=0.86; f<=1.141; f+=0.02){
+      if(e.edge >= 0.12 || k.tags.size >= 2) for(let f=0.86; f<=1.141; f+=(cfg.fast?0.04:0.02)){
         const ee = edgeScore(x,y,k.r*f);
         if(ee.edge > e.edge){ e = ee; r = k.r*f; }
       }
       if(e.edge >= 0.22){
-        for(let it=0; it<2; it++){
+        for(let it=0; it<(cfg.fast?1:2); it++){
           const st = Math.max(1, r*0.04);
           let bx=x, by=y, br=r;
           for(let dx=-1; dx<=1; dx++) for(let dy=-1; dy<=1; dy++) for(const f of [0.96,1,1.04]){
@@ -686,6 +811,7 @@ function render(){
   if(removed) chips.push(`<span class="chip bad">Quitados <b>${removed}</b></span>`);
   if(added) chips.push(`<span class="chip ok">Agregados <b>${added}</b></span>`);
   if(S.stats) chips.push(`<span class="chip">${S.stats.cands} candidatos · ${S.stats.ms} ms</span>`);
+  if(S.liveResult!=null) chips.push(`<span class="chip ${S.liveResult===active.length?"ok":"warn"}">En vivo: <b>${S.liveResult}</b> · foto final: <b>${active.length}</b></span>`);
   if(S.sampleTruth!=null) chips.push(`<span class="chip ${active.length===S.sampleTruth?"ok":"bad"}">Ejemplo: ${S.sampleTruth} tubos reales</span>`);
   $("chips").innerHTML = chips.join("");
   $("btnUndo").disabled = !S.history.length;
@@ -791,15 +917,17 @@ function makeSample(){
 }
 
 /* ---------------- Eventos ---------------- */
-$("btnStart").addEventListener("click", openCamera);
+$("btnStart").addEventListener("click", ()=>openCamera(false));
+$("btnLive").addEventListener("click", ()=>openCamera(true));
+$("btnFinish").addEventListener("click", capture);
 $("btnCamBack").addEventListener("click", ()=>{ stopCamera(); show("scrStart"); });
 $("btnShutter").addEventListener("click", capture);
 $("btnTorch").addEventListener("click", toggleTorch);
 $("fileCam").addEventListener("change", onFile);
 $("fileGallery").addEventListener("change", onFile);
 for(const l of document.querySelectorAll("label.btn")) l.addEventListener("keydown", e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); $(l.htmlFor).click(); } });
-$("btnSample").addEventListener("click", ()=>{ const s=makeSample(); S.sampleTruth=s.count; loadSource(s.canvas); });
-$("btnNew").addEventListener("click", ()=>{ show("scrStart"); openCamera(); });
+$("btnSample").addEventListener("click", ()=>{ const s=makeSample(); S.sampleTruth=s.count; S.liveResult=null; loadSource(s.canvas); });
+$("btnNew").addEventListener("click", ()=>{ show("scrStart"); openCamera(S.liveMode); });
 $("btnHome").addEventListener("click", ()=>show("scrStart"));
 $("btnUndo").addEventListener("click", undo);
 $("btnZoom").addEventListener("click", ()=>{ S.zoom = S.zoom>=3 ? 1 : S.zoom+1; applyZoom(); });
