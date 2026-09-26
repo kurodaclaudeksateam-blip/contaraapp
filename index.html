@@ -83,6 +83,22 @@ h1 em{font-style:normal;color:var(--accent)}
 .live-hud .st b{color:#3DDC97;font-weight:500}
 .live-hud .st.warn b{color:#FFC53D}
 .live-hud .st.bad b{color:#FF4D5E}
+.crosshair{position:absolute;left:50%;top:50%;width:44px;height:44px;margin:-22px 0 0 -22px;pointer-events:none;opacity:.8}
+.crosshair::before,.crosshair::after{content:"";position:absolute;background:#fff;box-shadow:0 0 3px #000}
+.crosshair::before{left:21px;top:0;width:2px;height:44px}
+.crosshair::after{top:21px;left:0;height:2px;width:44px}
+.level{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(122px + env(safe-area-inset-bottom,0px));display:flex;align-items:center;gap:10px;background:rgba(0,0,0,.6);color:#fff;border:1.5px solid rgba(255,255,255,.3);border-radius:999px;padding:8px 14px 8px 8px;font:500 12px/1.2 var(--f-mono);backdrop-filter:blur(6px);max-width:calc(100% - 170px)}
+.level .vial{position:relative;width:34px;height:34px;border-radius:50%;border:2px solid rgba(255,255,255,.6);flex:none}
+.level .vial::after{content:"";position:absolute;left:50%;top:50%;width:10px;height:10px;margin:-5px;border-radius:50%;border:1px solid rgba(255,255,255,.5)}
+.level .bub{position:absolute;left:50%;top:50%;width:12px;height:12px;margin:-6px;border-radius:50%;background:#3DDC97;transition:transform .12s linear}
+.level.warn{border-color:#FFC53D} .level.warn .bub{background:#FFC53D}
+.level.bad{border-color:#FF4D5E} .level.bad .bub{background:#FF4D5E}
+.level.ref{border-style:dashed}
+#overlay.erasing{pointer-events:auto;cursor:crosshair;touch-action:none}
+#btnCamErase[aria-pressed="true"],#btnErase[aria-pressed="true"]{background:#FF4D5E;color:#fff;border-color:#FF4D5E}
+.erase-row{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:13px;color:var(--muted)}
+.erase-row input{flex:1}
+#view.erasing{cursor:cell;touch-action:none}
 #btnFinish{background:#FF7A2E;color:#1A0D04;border-radius:999px;padding:18px 26px;font-size:16px;min-width:140px}
 
 /* ---------- resultado ---------- */
@@ -148,7 +164,11 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <section id="scrCam" hidden>
     <video id="video" playsinline muted autoplay></video>
     <div class="reticle"></div>
+    <div class="crosshair" aria-hidden="true"></div>
     <canvas id="overlay" hidden></canvas>
+    <button class="level" id="btnLevel" hidden aria-label="Nivel de inclinación. Toca para fijar el ángulo actual como referencia">
+      <span class="vial"><span class="bub" id="levelBub"></span></span><span id="levelTxt">Nivel</span>
+    </button>
     <div class="live-hud" id="liveHud" hidden>
       <div><div class="l"><span class="rec"></span><span id="liveLbl">Contando en vivo</span></div><div class="n" id="liveNum">0</div></div>
       <div class="st" id="liveSt">Apunta a los tubos y mantén el teléfono firme</div>
@@ -157,6 +177,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="cam-bar">
       <button id="btnCamBack" aria-label="Cancelar">Cancelar</button>
       <button id="btnShutter" aria-label="Tomar foto"></button>
+      <button id="btnCamErase" aria-pressed="false" hidden>Borrar zona</button>
       <button id="btnFinish" hidden>Terminar</button>
       <button id="btnTorch" aria-pressed="false" aria-label="Linterna" hidden>Luz</button>
       <span id="torchSpacer" style="min-width:64px"></span>
@@ -170,17 +191,25 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <div class="count-lbl">Tubos contados</div>
         <div id="countNum" class="count-num">0</div>
       </div>
-      <button id="btnCopy" class="btn-ghost" style="padding:10px 14px;font-size:13px">Copiar resultado</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button id="btnErase" class="btn-ghost" aria-pressed="false" style="padding:10px 14px;font-size:13px">Borrador</button>
+        <button id="btnCopy" class="btn-ghost" style="padding:10px 14px;font-size:13px">Copiar resultado</button>
+      </div>
+    </div>
+    <div class="erase-row" id="eraseRow" hidden>
+      <label for="sBrush">Tamaño del borrador</label>
+      <input type="range" id="sBrush" min="1" max="12" step="0.5" value="4">
     </div>
     <div id="chips" class="chips"></div>
     <div class="stage" id="stage"><canvas id="view"></canvas></div>
-    <p class="hint">Toca un círculo para quitarlo. Toca un tubo sin marcar para agregarlo. Los marcados en amarillo son dudosos: revísalos.</p>
+    <p class="hint" id="hint">Toca un círculo para quitarlo. Toca un tubo sin marcar para agregarlo. Los marcados en amarillo son dudosos: revísalos.</p>
     <div class="legend">
       <span><i style="border-color:#FF7A2E"></i>Detectado</span>
       <span><i style="border-color:#FFC53D"></i>Dudoso</span>
       <span><i style="border-color:#3DDC97"></i>Agregado</span>
       <span><i style="border-color:#FF4D5E;border-style:dashed"></i>Quitado</span>
       <span><i style="border-color:#9AA6AF;border-style:dotted"></i>Descartado auto</span>
+      <span><i style="border-color:#FF4D5E;background:#FF4D5E55;border-radius:3px"></i>Zona borrada</span>
     </div>
 
     <details class="panel" id="settings">
@@ -209,6 +238,14 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <input type="checkbox" id="sUniform" checked>
       </div>
       <div class="field toggle">
+        <label for="sPile" style="display:block">Sólo tubos en pila<br><small>Quita círculos sueltos lejos de la pila (círculos "en el aire").</small></label>
+        <input type="checkbox" id="sPile" checked>
+      </div>
+      <div class="field toggle">
+        <label for="sTilt" style="display:block">Corregir inclinación<br><small>Usa el giroscopio del teléfono (o la forma ovalada de los tubos) para enderezar la perspectiva.</small></label>
+        <input type="checkbox" id="sTilt" checked>
+      </div>
+      <div class="field toggle">
         <label for="sShowRej" style="display:block">Mostrar descartados<br><small>Ver lo que el filtro eliminó en automático.</small></label>
         <input type="checkbox" id="sShowRej">
       </div>
@@ -227,6 +264,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
           <li>Ajusta centro y radio para que el círculo caiga exacto sobre el borde (gradiente Sobel).</li>
           <li>Mide el soporte de borde en 32–120 puntos del perímetro. Si el borde real no cubre suficiente contorno, el círculo es invisible y se elimina.</li>
           <li>Quita duplicados concéntricos (el hueco interior del tubo), contornos que abarcan varios tubos y tamaños fuera de rango.</li>
+          <li>Rejilla de la pila: mide el paso entre tubos vecinos, centra cada círculo sobre su borde, elimina los encimados y rellena huecos que estén en línea entre dos tubos y tengan 4 o más vecinos.</li>
+          <li>Firma del tubo: el perfil de brillo del centro hacia afuera debe parecerse al de los demás tubos.</li>
+          <li>La pila es un grupo conectado: los círculos sueltos lejos de ella (andamios, barriles, "en el aire") se descartan.</li>
+          <li>Inclinación: el giroscopio endereza la perspectiva; en fotos de galería se estima por la forma ovalada de los tubos.</li>
         </ol>
         Ningún detector automático garantiza 99.9 % en toda foto: la precisión depende de luz, enfoque y que los tubos se vean de frente. Por eso cada resultado marca los dudosos y permite corregir con un toque.
       </div>
@@ -278,6 +319,8 @@ function cvDone(){
   if(S.cvReady) return;
   S.cvReady = true;
   setEngine("ok","Motor OpenCV " + (cv.getBuildInformation ? "4.10" : "") + " listo");
+  // precargar el detector en segundo plano para que el recorrido esté listo al empezar
+  setTimeout(() => { try{ getDetectWorker(); }catch(e){} }, 300);
   if(S.pending){ const p = S.pending; S.pending = null; runAnalysis(p); }
 }
 function waitForCv(){
@@ -305,6 +348,7 @@ function busy(on, txt){ $("busy").hidden = !on; if(txt) $("busyTxt").textContent
 async function openCamera(mode){
   S.camMode = mode || "photo";
   S.liveMode = S.camMode === "live";
+  initTilt();
   $("camNotice").hidden = true;
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ camFallback("Este navegador no permite la cámara en vivo aquí."); return; }
   try{
@@ -317,6 +361,7 @@ async function openCamera(mode){
     show("scrCam");
     await v.play().catch(()=>{});
     setLiveUI(S.camMode !== "photo");
+    $("btnLevel").hidden = false; updateLevel();
     if(S.camMode === "live") startLive();
     if(S.camMode === "sweep") startSweep();
     try{
@@ -339,7 +384,8 @@ function camFallback(reason){
   n.hidden = false;
 }
 function stopCamera(){
-  stopLive(); stopSweep();
+  stopLive(); stopSweep(); setCamErase(false);
+  $("btnLevel").hidden = true;
   if(S.stream){ S.stream.getTracks().forEach(t=>t.stop()); }
   S.stream = null; S.track = null;
   $("btnTorch").hidden = true; $("btnTorch").setAttribute("aria-pressed","false"); $("torchSpacer").hidden = false;
@@ -347,13 +393,19 @@ function stopCamera(){
 function capture(){
   const v = $("video");
   if(!v.videoWidth){ toast("La cámara aún no está lista"); return; }
-  const c = document.createElement("canvas");
+  let c = document.createElement("canvas");
   c.width = v.videoWidth; c.height = v.videoHeight;
   c.getContext("2d").drawImage(v,0,0);
+  let tiltInfo = null;
+  if(S.cvReady){
+    const small = scaledCanvas(c, 2000);
+    const corr = tiltCorrection(small.width, small.height, true);
+    if(corr){ c = warpCanvas(small, corr); tiltInfo = {ang:corr.ang, src:"giroscopio"}; }
+  }
   const liveCount = S.liveMode ? liveStableCount() : null;
   stopCamera();
   S.liveResult = liveCount;
-  loadSource(c);
+  loadSource(c, tiltInfo);
 }
 async function toggleTorch(){
   if(!S.track) return;
@@ -372,21 +424,179 @@ function onFile(e){
   img.src = url;
 }
 
+/* =================================================================
+   INCLINACIÓN — giroscopio → homografía de rotación H = K·R·K⁻¹
+   Endereza la vista para que la cara de la pila quede de frente:
+   los tubos vuelven a ser círculos y todos del mismo tamaño.
+   ================================================================= */
+const Tilt = { has:false, beta:0, gamma:0, ref:null, listening:false, now:null };
+function initTilt(){                       // se llama dentro del toque del usuario (iOS pide permiso)
+  if(Tilt.listening) return;
+  Tilt.listening = true;
+  const start = () => window.addEventListener("deviceorientation", e => {
+    if(e.beta == null) return;
+    Tilt.beta = e.beta; Tilt.gamma = e.gamma || 0; Tilt.has = true;
+  });
+  try{
+    if(typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function")
+      DeviceOrientationEvent.requestPermission().then(r => { if(r === "granted") start(); }).catch(()=>{});
+    else start();
+  }catch(e){}
+}
+const v3 = {
+  dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  norm:a=>{ const l=Math.hypot(a[0],a[1],a[2])||1; return [a[0]/l,a[1]/l,a[2]/l]; }
+};
+function upCam(){
+  // vector "arriba" del mundo en coordenadas de cámara (x derecha, y abajo, z hacia adelante)
+  const b = Tilt.beta*Math.PI/180, g = Tilt.gamma*Math.PI/180;
+  const ux = -Math.cos(b)*Math.sin(g), uy = Math.sin(b), uz = Math.cos(b)*Math.cos(g);
+  const ang = ((screen.orientation && screen.orientation.angle) || window.orientation || 0)*Math.PI/180;
+  const sx = ux*Math.cos(ang) - uy*Math.sin(ang), sy = ux*Math.sin(ang) + uy*Math.cos(ang);
+  return v3.norm([sx, -sy, -uz]);
+}
+function tiltTarget(u){
+  if(Tilt.ref) return Tilt.ref;                              // ángulo fijado por el usuario
+  const elev = Math.asin(Math.max(-1, Math.min(1, u[2])))*180/Math.PI;
+  if(elev < -55) return [0,0,-1];                            // mirando hacia abajo: tubos parados
+  const h = Math.hypot(u[0], u[1]);
+  return h > 1e-6 ? [u[0]/h, u[1]/h, 0] : [0,-1,0];          // pila vertical: cámara horizontal
+}
+function tiltState(){
+  if(!Tilt.has) return null;
+  const u = upCam(), t = tiltTarget(u);
+  const ang = Math.acos(Math.max(-1, Math.min(1, v3.dot(u,t))))*180/Math.PI;
+  return {u, t, ang};
+}
+function mat3mul(A,B){ const C=new Array(9).fill(0); for(let i=0;i<3;i++)for(let j=0;j<3;j++)for(let k=0;k<3;k++)C[i*3+j]+=A[i*3+k]*B[k*3+j]; return C; }
+function mat3inv(m){
+  const [a,b,c,d,e,f,g,h,i] = m;
+  const A=e*i-f*h, B=-(d*i-f*g), C=d*h-e*g, det=a*A+b*B+c*C;
+  return [A/det, -(b*i-c*h)/det, (b*f-c*e)/det, B/det, (a*i-c*g)/det, -(a*f-c*d)/det, C/det, -(a*h-b*g)/det, (a*e-b*d)/det];
+}
+function applyH(Hm, x, y){ const w = Hm[6]*x+Hm[7]*y+Hm[8]; return [(Hm[0]*x+Hm[1]*y+Hm[2])/w, (Hm[3]*x+Hm[4]*y+Hm[5])/w]; }
+/* Corrección para un cuadro W×H. fit=true agranda el lienzo para no recortar (fotos);
+   fit=false mantiene el tamaño y centra (vivo / recorrido: el rastreo necesita tamaño fijo). */
+function tiltCorrection(W, H, fit){
+  if(!$("sTilt").checked) return null;
+  const st = tiltState();
+  if(!st || st.ang < 1.5 || st.ang > 40) return null;
+  const axis = v3.norm(v3.cross(st.u, st.t)), th = st.ang*Math.PI/180;
+  const [x,y,z] = axis, c = Math.cos(th), s1 = Math.sin(th), C1 = 1-c;
+  const R = [c+x*x*C1, x*y*C1-z*s1, x*z*C1+y*s1,
+             y*x*C1+z*s1, c+y*y*C1, y*z*C1-x*s1,
+             z*x*C1-y*s1, z*y*C1+x*s1, c+z*z*C1];          // R·u = objetivo (Rodrigues)
+  const f = 0.78*Math.max(W,H);                              // ≈ 65° de campo horizontal
+  const K = [f,0,W/2, 0,f,H/2, 0,0,1], Ki = [1/f,0,-W/(2*f), 0,1/f,-H/(2*f), 0,0,1];
+  let Hm = mat3mul(K, mat3mul(R, Ki)), w = W, h = H;
+  if(fit){
+    const pts = [[0,0],[W,0],[W,H],[0,H]].map(([a,b])=>applyH(Hm,a,b));
+    const x0 = Math.min(...pts.map(q=>q[0])), y0 = Math.min(...pts.map(q=>q[1]));
+    const x1 = Math.max(...pts.map(q=>q[0])), y1 = Math.max(...pts.map(q=>q[1]));
+    const sc = Math.min(1, 1.35*Math.max(W,H)/Math.max(x1-x0, y1-y0));
+    Hm = mat3mul([sc,0,-x0*sc, 0,sc,-y0*sc, 0,0,1], Hm);
+    w = Math.round((x1-x0)*sc); h = Math.round((y1-y0)*sc);
+  }else{
+    const [cx,cy] = applyH(Hm, W/2, H/2);
+    Hm = mat3mul([1,0,W/2-cx, 0,1,H/2-cy, 0,0,1], Hm);
+  }
+  return {Hm, Hinv:mat3inv(Hm), w, h, ang:st.ang};
+}
+function warpMat(src, corr){
+  const dst = new cv.Mat(), M = cv.matFromArray(3,3,cv.CV_64F,corr.Hm);
+  cv.warpPerspective(src, dst, M, new cv.Size(corr.w, corr.h), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0,0,0,255));
+  M.delete();
+  return dst;
+}
+function warpCanvas(canvas, corr){
+  const src = cv.imread(canvas), dst = warpMat(src, corr), out = document.createElement("canvas");
+  cv.imshow(out, dst); src.delete(); dst.delete();
+  return out;
+}
+function updateLevel(){
+  const el = $("btnLevel");
+  if(el.hidden) return;
+  const st = tiltState();
+  if(!st){ el.className = "level"; $("levelTxt").textContent = "Sin sensor de inclinación"; return; }
+  const a = Math.round(st.ang);
+  const corr = $("sTilt").checked && a >= 2 && a <= 40;
+  el.className = "level" + (a > 40 ? " bad" : a > 12 ? " warn" : "") + (Tilt.ref ? " ref" : "");
+  $("levelTxt").textContent = a < 2 ? (Tilt.ref ? "Ángulo fijado · alineado" : "De frente ✓")
+    : a > 40 ? `Muy inclinado ${a}° · endereza` : `Inclinado ${a}°` + (corr ? " · corrigiendo" : "");
+  // burbuja: desplazamiento del "arriba" actual respecto al objetivo
+  const dx = Math.max(-1, Math.min(1, (st.u[0]-st.t[0])*3)), dy = Math.max(-1, Math.min(1, (st.u[2]-st.t[2])*3));
+  $("levelBub").style.transform = `translate(${dx*11}px, ${-dy*11}px)`;
+}
+setInterval(updateLevel, 150);
+
+/* =================================================================
+   BORRADOR — zonas que no se deben contar
+   ================================================================= */
+const inMask = (mask, x, y) => mask && mask.some(d => Math.hypot(d.x-x, d.y-y) < d.r);
+function screenToFrame(sx, sy){                         // pantalla → cuadro enderezado (vivo / recorrido)
+  const ov = $("overlay"), r = ov.getBoundingClientRect();
+  const F = S.frameInfo; if(!F) return null;
+  const s = Math.min(r.width/F.oW, r.height/F.oH), ox = (r.width-F.oW*s)/2, oy = (r.height-F.oH*s)/2;
+  const fx = (sx - r.left - ox)/s, fy = (sy - r.top - oy)/s;
+  return F.corr ? applyH(F.corr.Hm, fx, fy) : [fx, fy];
+}
+function frameToScreen(x, y){                           // cuadro enderezado → pantalla
+  const ov = $("overlay"), F = S.frameInfo;
+  const cw = ov.clientWidth, ch = ov.clientHeight;
+  const s = Math.min(cw/F.oW, ch/F.oH), ox = (cw-F.oW*s)/2, oy = (ch-F.oH*s)/2;
+  const [fx, fy] = F.corr ? applyH(F.corr.Hinv, x, y) : [x, y];
+  return [ox + fx*s, oy + fy*s, s];
+}
+function camBrushR(){ const F = S.frameInfo; return F ? Math.min(F.W, F.H)*0.06 : 20; }
+function camErase(ev){
+  const sw = S.sw, q = screenToFrame(ev.clientX, ev.clientY);
+  if(!q) return;
+  const r = camBrushR();
+  if(S.camMode === "sweep" && sw){
+    const P = sw.pose, dab = {x:P.s*q[0]+P.ox, y:P.s*q[1]+P.oy, r:P.s*r};
+    sw.mask.push(dab);
+    const before = sw.map.length;
+    sw.map = sw.map.filter(m => !(Math.hypot(m.gx-dab.x, m.gy-dab.y) < dab.r));
+    sw.erased += before - sw.map.length;
+    drawSweepOverlay();
+  }else if(S.camMode === "live"){
+    const F = S.frameInfo;
+    // en vivo la zona queda fija en pantalla (útil con el teléfono quieto o en tripié)
+    S.liveMask.push({x:q[0]/F.W, y:q[1]/F.H, r:r/F.W});
+    S.tracks = S.tracks.filter(t => !inMaskNorm(t));
+    drawOverlay();
+  }
+}
+const inMaskNorm = t => S.liveMask.some(d => Math.hypot(d.x-t.x, (d.y-t.y)*(S.frameInfo?S.frameInfo.H/S.frameInfo.W:1)) < d.r);
+function setCamErase(on){
+  $("btnCamErase").setAttribute("aria-pressed", String(on));
+  $("overlay").classList.toggle("erasing", on);
+  S.camErasing = on;
+}
+(function(){
+  const ov = $("overlay"); let down = false;
+  ov.addEventListener("pointerdown", e => { if(!S.camErasing) return; down = true; ov.setPointerCapture(e.pointerId); camErase(e); });
+  ov.addEventListener("pointermove", e => { if(down && S.camErasing) camErase(e); });
+  const up = () => { down = false; };
+  ov.addEventListener("pointerup", up); ov.addEventListener("pointercancel", up);
+})();
+
 /* ---------------- Modo en vivo: detectar + seguir círculos cuadro a cuadro ---------------- */
 function setLiveUI(on){
   $("scrCam").classList.toggle("live", on);
   $("overlay").hidden = !on; $("liveHud").hidden = !on;
-  $("btnShutter").hidden = on; $("btnFinish").hidden = !on;
+  $("btnShutter").hidden = on; $("btnFinish").hidden = !on; $("btnCamErase").hidden = !on;
   $("liveNum").textContent = "0";
   $("minimap").hidden = !(on && S.camMode === "sweep");
   $("liveLbl").textContent = S.camMode === "sweep" ? "Recorrido · tubos mapeados" : "Contando en vivo";
   $("liveSt").className = "st";
   $("liveSt").textContent = S.camMode === "sweep"
-    ? "Empieza arriba a la izquierda y recorre la primera franja hacia la derecha, despacio"
+    ? "Empieza arriba a la izquierda con margen (la orilla de la pila debe pasar por el centro) y recorre despacio"
     : "Apunta a los tubos y mantén el teléfono firme";
 }
 function startLive(){
-  S.tracks = []; S.liveFrames = 0; S.liveOn = true; S.liveBusy = false;
+  S.tracks = []; S.liveFrames = 0; S.liveOn = true; S.liveBusy = false; S.liveMask = [];
   S.liveCanvas = document.createElement("canvas");
   if(!S.cvReady) $("liveSt").textContent = "Cargando motor OpenCV…";
   const tick = () => {
@@ -413,13 +623,15 @@ function liveStep(){
   c.width = Math.round(v.videoWidth*sc); c.height = Math.round(v.videoHeight*sc);
   c.getContext("2d").drawImage(v,0,0,c.width,c.height);
   const t0 = performance.now();
+  const W = c.width, H = c.height;
+  const corr = tiltCorrection(W, H, false);
+  S.frameInfo = {oW:W, oH:H, W, H, corr};
   let dets = [];
-  try{ dets = detect(c, Object.assign(readSettings(), {fast:true})).kept; }
+  try{ dets = detect(corr ? warpCanvas(c, corr) : c, Object.assign(readSettings(), {fast:true})).kept; }
   catch(e){ console.warn("live", e); }
   const ms = performance.now()-t0;
-  // normalizar a 0..1 del video para que el seguimiento no dependa de la escala
-  const W = c.width, H = c.height;
-  updateTracks(dets.map(d=>({x:d.x/W, y:d.y/H, r:d.r/W, conf:d.conf})), W/H);
+  // normalizar a 0..1 del cuadro enderezado para que el seguimiento no dependa de la escala
+  updateTracks(dets.map(d=>({x:d.x/W, y:d.y/H, r:d.r/W, conf:d.conf})).filter(t=>!inMaskNorm(t)), W/H);
   S.liveFrames++;
   $("liveNum").textContent = liveStableCount();
   $("liveSt").textContent = dets.length + " en este cuadro · " + (1000/Math.max(ms,1)).toFixed(1) + " análisis/s" +
@@ -458,18 +670,25 @@ function drawOverlay(){
   const g = ov.getContext("2d");
   g.setTransform(dpr,0,0,dpr,0,0);
   g.clearRect(0,0,cw,ch);
-  // mapear coordenadas del video a la pantalla (object-fit: contain → se ve todo lo que se cuenta)
-  const vw = v.videoWidth, vh = v.videoHeight;
-  const s = Math.min(cw/vw, ch/vh), ox = (cw - vw*s)/2, oy = (ch - vh*s)/2;
+  const F = S.frameInfo;
+  if(!F) return;
+  // círculo del cuadro enderezado → elipse en pantalla (se ve la perspectiva real)
+  const shape = (cx, cy, r) => {
+    g.beginPath();
+    for(let k=0;k<=20;k++){ const a=k/20*Math.PI*2, [x,y]=frameToScreen(cx+r*Math.cos(a), cy+r*Math.sin(a)); k?g.lineTo(x,y):g.moveTo(x,y); }
+    g.closePath();
+  };
+  g.fillStyle = "rgba(255,77,94,.28)";
+  for(const d of S.liveMask){ shape(d.x*F.W, d.y*F.H, d.r*F.W); g.fill(); }
   for(const t of S.tracks){
     if(isStable(t)) continue;
-    g.beginPath(); g.arc(ox+t.x*vw*s, oy+t.y*vh*s, t.r*vw*s, 0, Math.PI*2);
+    shape(t.x*F.W, t.y*F.H, t.r*F.W);
     g.setLineDash([4,5]); g.lineWidth = 1.5; g.strokeStyle = "rgba(255,255,255,.55)"; g.stroke(); g.setLineDash([]);
   }
   const stable = S.tracks.filter(isStable).sort((a,b)=> (Math.round(a.y*12)-Math.round(b.y*12)) || (a.x-b.x));
   stable.forEach((t,i)=>{
-    const x = ox+t.x*vw*s, y = oy+t.y*vh*s, r = t.r*vw*s;
-    g.beginPath(); g.arc(x,y,r,0,Math.PI*2);
+    const [x, y, s] = frameToScreen(t.x*F.W, t.y*F.H), r = t.r*F.W*s;
+    shape(t.x*F.W, t.y*F.H, t.r*F.W);
     const col = t.miss ? "#FFC53D" : "#FF7A2E";
     g.fillStyle = col+"38"; g.fill(); g.lineWidth = 2.5; g.strokeStyle = col; g.stroke();
     const fs = Math.max(10, Math.min(r*0.8, 30));
@@ -539,7 +758,7 @@ function onWorkerResult(m){
 function startSweep(){
   S.sw = { on:true, pose:{s:1, ox:0, oy:0}, prevGray:null, vel:{x:0,y:0}, map:[], nextId:1,
            keyframes:[], lastKF:null, frames:0, lostFor:0, status:"ok", t0:performance.now(), medR:0, W:0, H:0,
-           jobs:{}, jobId:0, discarded:0, pending:false, lastDets:0, detCount:0, canvas:document.createElement("canvas") };
+           jobs:{}, jobId:0, discarded:0, erased:0, mask:[], validMask:null, pending:false, lastDets:0, detCount:0, canvas:document.createElement("canvas") };
   getDetectWorker();
   const tick = () => {
     if(!S.sw || !S.sw.on) return;
@@ -553,6 +772,7 @@ function stopSweep(){
   if(S.sw){
     S.sw.on = false;
     if(S.sw.prevGray){ S.sw.prevGray.delete(); S.sw.prevGray = null; }
+    if(S.sw.validMask){ S.sw.validMask.delete(); S.sw.validMask = null; }
   }
   clearTimeout(S.swTimer);
 }
@@ -565,14 +785,34 @@ function sweepStep(){
   const ctx = c.getContext("2d", {willReadFrequently:true});
   ctx.drawImage(v, 0, 0, c.width, c.height);
   const W = c.width, H = c.height; sw.W = W; sw.H = H;
-  const img = ctx.getImageData(0, 0, W, H);
-  const src = cv.matFromImageData(img), gray = new cv.Mat();
+  // enderezar con el giroscopio (mismo tamaño para que el rastreo compare cuadros iguales)
+  const corr = tiltCorrection(W, H, false);
+  S.frameInfo = {oW:W, oH:H, W, H, corr};
+  let img, src = cv.matFromImageData(ctx.getImageData(0, 0, W, H));
+  if(corr){
+    const wsrc = warpMat(src, corr); src.delete(); src = wsrc;
+    img = new ImageData(new Uint8ClampedArray(src.data), W, H);
+    ctx.putImageData(img, 0, 0);                        // el cuadro clave también queda enderezado
+    img = new ImageData(new Uint8ClampedArray(src.data), W, H);
+    // zona válida (sin bordes negros del enderezado) para no rastrear esquinas que se mueven con la cámara
+    const ones = new cv.Mat(H, W, cv.CV_8UC1, new cv.Scalar(255)), vm = new cv.Mat(), M = cv.matFromArray(3,3,cv.CV_64F,corr.Hm);
+    cv.warpPerspective(ones, vm, M, new cv.Size(W,H), cv.INTER_NEAREST, cv.BORDER_CONSTANT, new cv.Scalar(0));
+    const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(15,15)); cv.erode(vm, vm, k);
+    ones.delete(); M.delete(); k.delete();
+    if(sw.validMask) sw.validMask.delete();
+    sw.validMask = vm; sw.corrQuad = [[0,0],[W,0],[W,H],[0,H]].map(([a,b])=>applyH(corr.Hm,a,b));
+  }else{
+    img = ctx.getImageData(0, 0, W, H);
+    if(sw.validMask){ sw.validMask.delete(); sw.validMask = null; }
+    sw.corrQuad = null;
+  }
+  const gray = new cv.Mat();
   cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY); src.delete();
 
   // 1. movimiento de cámara
   let ok = true;
   if(sw.prevGray){
-    const m = estimateMotion(sw.prevGray, gray, W, sw.vel);
+    const m = estimateMotion(sw.prevGray, gray, W, sw.vel, sw.validMask);
     if(m){
       const P = sw.pose;
       P.ox -= P.s*m.tx/m.k; P.oy -= P.s*m.ty/m.k; P.s /= m.k;
@@ -615,7 +855,7 @@ function sweepStep(){
   }else if(sw.status === "fast"){
     st.className = "st warn"; st.innerHTML = "<b>Más despacio</b><br>no se cuenta mientras vas rápido";
   }else if(S.detWorker && !S.detWorker.ready && !S.detWorker.failed && performance.now()-sw.t0 < 15000){
-    st.className = "st warn"; st.innerHTML = "<b>Preparando detector…</b><br>puedes empezar a apuntar";
+    st.className = "st warn"; st.innerHTML = "<b>Espera: preparando detector</b><br>mantén la cámara quieta en el inicio";
   }else{
     st.className = "st";
     st.innerHTML = "<b>Rastreo OK</b><br>" + sw.lastDets + " en cuadro · " + Math.round((performance.now()-sw.t0)/1000) + " s";
@@ -623,12 +863,12 @@ function sweepStep(){
   drawSweepOverlay();
   drawMinimap();
 }
-function estimateMotion(prev, cur, W, vel){
+function estimateMotion(prev, cur, W, vel, validMask){
   const p0 = new cv.Mat(), p1 = new cv.Mat(), pb = new cv.Mat();
   const st = new cv.Mat(), er = new cv.Mat(), st2 = new cv.Mat(), er2 = new cv.Mat();
   const none = new cv.Mat();
   try{
-    cv.goodFeaturesToTrack(prev, p0, 300, 0.01, Math.max(6, W/70), none, 5);
+    cv.goodFeaturesToTrack(prev, p0, 300, 0.01, Math.max(6, W/70), validMask || none, 5);
     const n = p0.rows;
     if(n < 15) return null;
     // predicción con la velocidad anterior (evita confundir un tubo con el vecino en una pila periódica)
@@ -674,8 +914,12 @@ function integrateSweep(dets, W, H, pose){
   const sw = S.sw, P = pose || sw.pose, cur = sw.pose;
   const vx0 = P.ox, vy0 = P.oy, vx1 = P.ox + P.s*W, vy1 = P.oy + P.s*H;
   // sólo tubos completos dentro del cuadro (los cortados en el borde dan posiciones malas)
+  // zona central: lo visto en el centro se confirma antes (menos distorsión); en la orilla pide más cuadros
+  const zx0 = W*0.12, zx1 = W*0.88, zy0 = H*0.12, zy1 = H*0.88;
   const G = dets.filter(d => d.x-d.r > 2 && d.y-d.r > 2 && d.x+d.r < W-2 && d.y+d.r < H-2)
-                .map(d => ({gx:P.s*d.x+P.ox, gy:P.s*d.y+P.oy, gr:P.s*d.r, edge:d.edge}));
+                .map(d => ({gx:P.s*d.x+P.ox, gy:P.s*d.y+P.oy, gr:P.s*d.r, edge:d.edge,
+                            central: d.x > zx0 && d.x < zx1 && d.y > zy0 && d.y < zy1}))
+                .filter(g => !inMask(sw.mask, g.gx, g.gy));
   const pad = sw.medR*P.s*2 || W*0.1;
   let inView = sw.map.filter(m => m.gx > vx0-pad && m.gx < vx1+pad && m.gy > vy0-pad && m.gy < vy1+pad);
   const nearest = (g, list) => {
@@ -698,10 +942,12 @@ function integrateSweep(dets, W, H, pose){
     if(m && d < 0.55*Math.max(m.gr, g.gr)){
       const a = m.ok ? 0.15 : 0.4;
       m.gx += (g.gx-m.gx)*a; m.gy += (g.gy-m.gy)*a; m.gr += (g.gr-m.gr)*a;
-      m.hits++; m.edge = Math.max(m.edge, g.edge); matched.add(m);
-      if(!m.ok && m.hits >= 3) confirmTube(m);
+      m.hits++; if(g.central) m.cHits = (m.cHits||0) + 1;
+      m.edge = Math.max(m.edge, g.edge); matched.add(m);
+      // confirmación: 3 cuadros si pasó por el centro; 5 si sólo se vio en la orilla (orillas de la pila)
+      if(!m.ok && ((m.hits >= 3 && m.cHits >= 1) || m.hits >= 5)) confirmTube(m);
     }else{
-      const nm = {gx:g.gx, gy:g.gy, gr:g.gr, edge:g.edge, hits:1, views:0, ok:false};
+      const nm = {gx:g.gx, gy:g.gy, gr:g.gr, edge:g.edge, hits:1, cHits:g.central?1:0, views:0, ok:false};
       sw.map.push(nm); inView.push(nm); matched.add(nm);
     }
   }
@@ -732,7 +978,7 @@ function addKeyframe(c){
   const sw = S.sw, P = sw.pose;
   const cx = P.ox + P.s*c.width/2, cy = P.oy + P.s*c.height/2;
   if(sw.lastKF && Math.hypot(cx-sw.lastKF.cx, cy-sw.lastKF.cy) < 0.2*P.s*c.width) return;
-  const kf = {ox:P.ox, oy:P.oy, s:P.s, w:c.width, h:c.height, blob:null};
+  const kf = {ox:P.ox, oy:P.oy, s:P.s, w:c.width, h:c.height, blob:null, quad:sw.corrQuad};
   sw.keyframes.push(kf); sw.lastKF = {cx, cy};
   kf.ready = new Promise(res => c.toBlob(b => { kf.blob = b; res(); }, "image/jpeg", 0.82));
 }
@@ -741,17 +987,34 @@ function viewMap(){
   const s = Math.min(cw/sw.W, ch/sw.H);
   return {cw, ch, s, ox:(cw - sw.W*s)/2, oy:(ch - sw.H*s)/2};
 }
+function sweepShape(g, gx, gy, gr){                       // círculo global → forma en pantalla
+  const P = S.sw.pose;
+  g.beginPath();
+  for(let k=0;k<=18;k++){
+    const a = k/18*Math.PI*2, fx = (gx + gr*Math.cos(a) - P.ox)/P.s, fy = (gy + gr*Math.sin(a) - P.oy)/P.s;
+    const [x,y] = frameToScreen(fx, fy); k ? g.lineTo(x,y) : g.moveTo(x,y);
+  }
+  g.closePath();
+}
 function drawSweepOverlay(){
   const ov = $("overlay"), dpr = window.devicePixelRatio || 1, sw = S.sw, P = sw.pose;
   const V = viewMap();
   if(ov.width !== Math.round(V.cw*dpr) || ov.height !== Math.round(V.ch*dpr)){ ov.width = Math.round(V.cw*dpr); ov.height = Math.round(V.ch*dpr); }
   const g = ov.getContext("2d");
   g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,V.cw,V.ch);
-  const toScr = m => [V.ox + (m.gx-P.ox)/P.s*V.s, V.oy + (m.gy-P.oy)/P.s*V.s, m.gr/P.s*V.s];
+  if(!S.frameInfo) return;
+  const toScr = m => { const [x,y,s2] = frameToScreen((m.gx-P.ox)/P.s, (m.gy-P.oy)/P.s); return [x, y, m.gr/P.s*s2]; };
+  // zona central de conteo
+  { const W = sw.W, H = sw.H; g.beginPath();
+    [[.12,.12],[.88,.12],[.88,.88],[.12,.88]].forEach(([a,b],i)=>{ const [x,y]=frameToScreen(W*a,H*b); i?g.lineTo(x,y):g.moveTo(x,y); });
+    g.closePath(); g.setLineDash([10,8]); g.lineWidth = 1.5; g.strokeStyle = "rgba(255,255,255,.45)"; g.stroke(); g.setLineDash([]); }
+  // zonas borradas
+  g.fillStyle = "rgba(255,77,94,.28)";
+  for(const d of sw.mask){ sweepShape(g, d.x, d.y, d.r); g.fill(); }
   for(const m of sw.map){
     const [x,y,r] = toScr(m);
     if(x < -r || y < -r || x > V.cw+r || y > V.ch+r) continue;
-    g.beginPath(); g.arc(x,y,r,0,Math.PI*2);
+    sweepShape(g, m.gx, m.gy, m.gr);
     if(m.ok){
       g.fillStyle = "#3DDC9733"; g.fill(); g.lineWidth = 2; g.strokeStyle = "#3DDC97"; g.stroke();
       const fs = Math.max(9, Math.min(r*0.75, 24));
@@ -786,7 +1049,22 @@ async function finishSweep(){
   try{
     const kfs = sw.keyframes;
     await Promise.all(kfs.map(k=>k.ready));
-    const conf = sw.map.filter(m=>m.ok);
+    // limpieza final: fundir duplicados que dejó la deriva y quitar tubos sueltos lejos de la pila
+    let conf = sw.map.filter(m=>m.ok).sort((a,b)=>b.hits-a.hits);
+    const keep = [];
+    for(const m of conf){
+      if(keep.some(k => Math.hypot(k.gx-m.gx, k.gy-m.gy) < 0.7*Math.max(k.gr, m.gr))){ sw.discarded++; continue; }
+      keep.push(m);
+    }
+    conf = keep;
+    if($("sPile").checked && conf.length >= 5){
+      const R = med(conf.map(m=>m.gr));
+      conf = conf.filter(m => {
+        const near = conf.some(o => o!==m && Math.hypot(o.gx-m.gx, o.gy-m.gy) < 3.2*R);
+        if(!near && m.hits < 8){ sw.discarded++; return false; }
+        return true;
+      });
+    }
     if(!kfs.length){ busy(false); toast("No se registró ningún cuadro"); show("scrStart"); return; }
     let x0=1e9, y0=1e9, x1=-1e9, y1=-1e9;
     for(const k of kfs){ x0 = Math.min(x0,k.ox); y0 = Math.min(y0,k.oy); x1 = Math.max(x1,k.ox+k.s*k.w); y1 = Math.max(y1,k.oy+k.s*k.h); }
@@ -800,7 +1078,14 @@ async function finishSweep(){
     for(const k of kfs){
       if(!k.blob) continue;
       const bmp = await createImageBitmap(k.blob);
+      g.save();
+      if(k.quad){                         // sin los bordes negros del enderezado
+        g.beginPath();
+        k.quad.forEach(([a,b],i)=>{ const x=(k.ox+k.s*a-x0)*z, y=(k.oy+k.s*b-y0)*z; i?g.lineTo(x,y):g.moveTo(x,y); });
+        g.closePath(); g.clip();
+      }
       g.drawImage(bmp, (k.ox-x0)*z, (k.oy-y0)*z, k.s*k.w*z, k.s*k.h*z);
+      g.restore();
       bmp.close && bmp.close();
     }
     S.mode = "sweep";
@@ -808,7 +1093,8 @@ async function finishSweep(){
     S.dets = conf.map(m => ({x:(m.gx-x0)*z, y:(m.gy-y0)*z, r:m.gr*z, conf:Math.min(1, 0.5+m.hits*0.06),
                              edge:m.edge, votes:m.hits, state:"auto"}));
     S.rejected = []; S.history = []; S.liveResult = null; S.sampleTruth = S.sweepTruth ?? null;
-    S.stats = {sweep:true, discarded:sw.discarded, frames:sw.frames, secs:Math.round((performance.now()-sw.t0)/1000), kfs:kfs.length};
+    S.mask = sw.mask.map(d => ({x:(d.x-x0)*z, y:(d.y-y0)*z, r:d.r*z})); S.tiltInfo = null;
+    S.stats = {sweep:true, discarded:sw.discarded, erased:sw.erased, frames:sw.frames, secs:Math.round((performance.now()-sw.t0)/1000), kfs:kfs.length};
     S.zoom = 1; applyZoom();
     show("scrResult");
   }catch(e){ console.error(e); toast("Error al armar el mapa: " + (e.message||e)); }
@@ -817,20 +1103,22 @@ async function finishSweep(){
 }
 
 /* ---------------- Carga de imagen ---------------- */
-function scaledCanvas(src, maxDim){
+function scaledCanvas(src, maxDim, allowUp){
   const w = src.naturalWidth || src.videoWidth || src.width;
   const h = src.naturalHeight || src.videoHeight || src.height;
-  const s = Math.min(1, maxDim/Math.max(w,h));
+  // allowUp: las fotos chicas se amplían (hasta 2.5×) para que cada tubo tenga suficientes píxeles
+  const s = allowUp ? Math.min(2.5, maxDim/Math.max(w,h)) : Math.min(1, maxDim/Math.max(w,h));
   const c = document.createElement("canvas");
   c.width = Math.round(w*s); c.height = Math.round(h*s);
   const g = c.getContext("2d"); g.imageSmoothingQuality = "high";
   g.drawImage(src,0,0,c.width,c.height);
   return c;
 }
-function loadSource(src){
-  S.mode = "photo";
+function loadSource(src, tiltInfo){
+  S.mode = "photo"; S.mask = []; S.tiltInfo = tiltInfo || null; S.squashChecked = !!tiltInfo;
+  setErase(false);
   S.full = scaledCanvas(src, 2000);
-  S.work = scaledCanvas(S.full, 1100);
+  S.work = scaledCanvas(S.full, 1100, true);
   S.k = S.full.width / S.work.width;
   S.zoom = 1; applyZoom();
   show("scrResult");
@@ -843,11 +1131,20 @@ function runAnalysis(work){
   setTimeout(()=>{
     const t0 = performance.now();
     try{
+      if(!S.squashChecked && $("sTilt").checked){
+        S.squashChecked = true;
+        const sq = estimateSquash(S.work, readSettings());
+        if(sq){
+          S.full = stretchCanvas(S.full, sq); S.work = stretchCanvas(S.work, sq);
+          S.k = S.full.width / S.work.width; work = S.work;
+          S.tiltInfo = {ang:Math.round(Math.acos(sq.ratio)*180/Math.PI), src:"forma de los tubos"};
+        }
+      }
       const res = detect(work, readSettings());
-      S.dets = res.kept.map(d => Object.assign(d,{state:"auto"}));
+      S.dets = res.kept.filter(d => !inMask(S.mask, d.x, d.y)).map(d => Object.assign(d,{state:"auto"}));
       S.rejected = res.rejected;
       S.history = [];
-      S.stats = {ms:Math.round(performance.now()-t0), cands:res.nCand, clusters:res.nClusters};
+      S.stats = {ms:Math.round(performance.now()-t0), cands:res.nCand, clusters:res.nClusters, lattice:res.latticeAdded};
     }catch(err){
       console.error(err); toast("Error en el análisis: "+(err.message||err));
       S.dets = []; S.rejected = [];
@@ -857,12 +1154,71 @@ function runAnalysis(work){
   }, 40);
 }
 
+/* Inclinación estimada desde la imagen: los tubos vistos en ángulo se ven ovalados.
+   Se ajustan elipses a los contornos y, si todas apuntan igual, se estira la foto
+   en el eje corto para devolverles la forma redonda. */
+function estimateSquash(canvas, cfg){
+  const W = canvas.width, H = canvas.height, minDim = Math.min(W,H);
+  const rMin = Math.max(4, minDim*cfg.dMin/200), rMax = Math.max(rMin+4, minDim*cfg.dMax/200);
+  const src = cv.imread(canvas), g = new cv.Mat(), bin = new cv.Mat();
+  const E = [];
+  try{
+    cv.cvtColor(src, g, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(g, g, new cv.Size(5,5), 1.4);
+    for(const inv of [false, true]){
+      cv.threshold(g, bin, 0, 255, (inv?cv.THRESH_BINARY_INV:cv.THRESH_BINARY) + cv.THRESH_OTSU);
+      const cs = new cv.MatVector(), hi = new cv.Mat();
+      cv.findContours(bin, cs, hi, cv.RETR_LIST, cv.CHAIN_APPROX_NONE);
+      for(let i=0;i<cs.size();i++){
+        const c = cs.get(i);
+        if(c.rows >= 20){
+          const area = cv.contourArea(c);
+          if(area > Math.PI*rMin*rMin*0.4 && area < Math.PI*rMax*rMax*1.3){
+            const e = cv.fitEllipse(c);
+            const a = Math.max(e.size.width, e.size.height)/2, b = Math.min(e.size.width, e.size.height)/2;
+            const fill = area/(Math.PI*a*b);
+            if(b > 0 && fill > 0.9 && fill < 1.08){
+              // dirección del eje corto
+              const phi = (e.size.width < e.size.height ? e.angle : e.angle + 90)*Math.PI/180;
+              E.push({ratio:b/a, phi});
+            }
+          }
+        }
+        c.delete();
+      }
+      cs.delete(); hi.delete();
+    }
+  }finally{ src.delete(); g.delete(); bin.delete(); }
+  if(E.length < 8) return null;
+  const ratio = med(E.map(e=>e.ratio));
+  if(ratio > 0.93 || ratio < 0.55) return null;
+  const ov = E.filter(e=>e.ratio < 0.95);
+  const C = ov.reduce((s,e)=>s+Math.cos(2*e.phi),0)/ov.length, Sn = ov.reduce((s,e)=>s+Math.sin(2*e.phi),0)/ov.length;
+  if(Math.hypot(C, Sn) < 0.75) return null;              // los óvalos no apuntan igual: no es inclinación
+  return {ratio, phi: Math.atan2(Sn, C)/2};
+}
+function stretchCanvas(canvas, sq){
+  const k = 1/sq.ratio, cx = Math.cos(sq.phi), sy = Math.sin(sq.phi);
+  // A = I + (k-1)·v·vᵀ  (estira sólo a lo largo del eje corto v)
+  const a = 1+(k-1)*cx*cx, b = (k-1)*cx*sy, d = 1+(k-1)*sy*sy;
+  const W = canvas.width, H = canvas.height;
+  const pts = [[0,0],[W,0],[W,H],[0,H]].map(([x,y])=>[a*x+b*y, b*x+d*y]);
+  const x0 = Math.min(...pts.map(p=>p[0])), y0 = Math.min(...pts.map(p=>p[1]));
+  const w = Math.round(Math.max(...pts.map(p=>p[0]))-x0), h = Math.round(Math.max(...pts.map(p=>p[1]))-y0);
+  const src = cv.imread(canvas), dst = new cv.Mat(), M = cv.matFromArray(2,3,cv.CV_64F,[a,b,-x0, b,d,-y0]);
+  cv.warpAffine(src, dst, M, new cv.Size(w,h), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(0,0,0,255));
+  const out = document.createElement("canvas"); cv.imshow(out, dst);
+  src.delete(); dst.delete(); M.delete();
+  return out;
+}
+
 /* ---------------- Ajustes ---------------- */
 function readSettings(){
   return {
     sens:+$("sSens").value, minEdge:+$("sEdge").value,
     dMin:+$("sRmin").value, dMax:+$("sRmax").value,
-    uniform:$("sUniform").checked
+    uniform:$("sUniform").checked,
+    pile:$("sPile").checked
   };
 }
 function syncOutputs(){
@@ -881,6 +1237,7 @@ function detect(canvas, cfg){
   let rMax = Math.max(rMin+4, Math.round(minDim*cfg.dMax/200));
   const mats = [];
   const M = m => (mats.push(m), m);
+  const TM = cfg.timing ? {t0:performance.now()} : null, mark = n => { if(TM) TM[n] = Math.round(performance.now()-TM.t0); };
   try{
     const src  = M(canvas.data ? cv.matFromImageData(canvas) : cv.imread(canvas));
     const gray = M(new cv.Mat()); cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
@@ -890,14 +1247,28 @@ function detect(canvas, cfg){
     const med  = M(new cv.Mat()); cv.medianBlur(eq, med, 5);
     const blur = M(new cv.Mat()); cv.GaussianBlur(med, blur, new cv.Size(5,5), 1.4);
     const rawB = M(new cv.Mat()); cv.GaussianBlur(gray, rawB, new cv.Size(7,7), 2);
+    // imagen de verificación SIN ecualizar: CLAHE amplifica el ruido de zonas lisas u oscuras
+    // y ahí nacían los "círculos en el aire"
+    const vImg = M(new cv.Mat()); cv.GaussianBlur(gray, vImg, new cv.Size(5,5), 1.4);
 
     const cands = [];
+    // Pirámide: los círculos grandes se buscan en la imagen reducida (el costo de Hough crece
+    // con el radio; a escala s cuesta ~s² y el refinamiento posterior recupera la precisión)
+    const HOUGH_RMAX = 32, pyr = new Map();
+    const scaled = (img, sc) => {
+      if(!pyr.has(img)) pyr.set(img, new Map());
+      const per = pyr.get(img), key = sc.toFixed(3);
+      if(!per.has(key)){ const m = M(new cv.Mat()); cv.resize(img, m, new cv.Size(0,0), sc, sc, cv.INTER_AREA); per.set(key, m); }
+      return per.get(key);
+    };
     const hough = (img, method, dp, minDist, p1, p2, a, b, tag) => {
       const out = new cv.Mat();
+      const sc = a > HOUGH_RMAX ? HOUGH_RMAX/a : 1;
       try{
-        cv.HoughCircles(img, out, method, dp, minDist, p1, p2, a, b);
+        const src = sc < 1 ? scaled(img, sc) : img;
+        cv.HoughCircles(src, out, method, dp, minDist*sc, p1, p2, Math.max(3, Math.round(a*sc)), Math.round(b*sc));
         const d = out.data32F;
-        for(let i=0;i<out.cols;i++) cands.push({x:d[i*3], y:d[i*3+1], r:d[i*3+2], tag});
+        for(let i=0;i<out.cols;i++) cands.push({x:d[i*3]/sc, y:d[i*3+1]/sc, r:d[i*3+2]/sc, tag});
       }catch(e){ console.warn("hough", tag, e); }
       out.delete();
     };
@@ -916,8 +1287,13 @@ function detect(canvas, cfg){
     }
     // 3. Hough ALT (más preciso, OpenCV ≥ 4.3)
     const ALT = cv.HOUGH_GRADIENT_ALT !== undefined ? cv.HOUGH_GRADIENT_ALT : 4;
-    hough(blur, ALT, 1.5, rMin*1.6, 280, Math.max(0.55, 0.9 - cfg.sens*0.03), rMin, rMax, "hg-alt");
+    { // ALT en dos tramos: tubos chicos a escala completa, grandes en la pirámide
+      const mid = Math.min(rMax, Math.max(rMin+4, HOUGH_RMAX));
+      hough(blur, ALT, 1.5, rMin*1.6, 280, Math.max(0.55, 0.9 - cfg.sens*0.03), rMin, mid, "hg-alt");
+      if(mid < rMax) hough(blur, ALT, 1.5, mid*1.6, 280, Math.max(0.55, 0.9 - cfg.sens*0.03), Math.round(mid*0.9), rMax, "hg-alt");
+    }
 
+    mark("hough");
     // 5-7. Contornos circulares en binarizaciones
     const areaMin = Math.PI*rMin*rMin*0.5, areaMax = Math.PI*rMax*rMax*1.4;
     const contourPass = (bin, tag) => {
@@ -954,14 +1330,14 @@ function detect(canvas, cfg){
 
     // ---- Mapas de gradiente para verificación ----
     const gx = M(new cv.Mat()), gy = M(new cv.Mat());
-    cv.Sobel(blur, gx, cv.CV_32F, 1, 0, 3);
-    cv.Sobel(blur, gy, cv.CV_32F, 0, 1, 3);
-    const GX = gx.data32F, GY = gy.data32F, I = blur.data;
+    cv.Sobel(vImg, gx, cv.CV_32F, 1, 0, 3);
+    cv.Sobel(vImg, gy, cv.CV_32F, 0, 1, 3);
+    const GX = gx.data32F, GY = gy.data32F, I = vImg.data;
     // umbral de borde adaptativo: 30% del percentil 97 de la magnitud
     const sample = [];
     for(let i=0;i<GX.length;i+=7) sample.push(Math.hypot(GX[i],GY[i]));
     sample.sort((p,q)=>p-q);
-    const T = Math.min(200, Math.max(18, 0.3*sample[Math.floor(sample.length*0.97)]));
+    const T = Math.min(200, Math.max(30, 0.3*sample[Math.floor(sample.length*0.97)]));
 
     const edgeScore = (x,y,r) => {
       const N = Math.max(32, Math.min(120, Math.round(2*Math.PI*r/3)));
@@ -999,6 +1375,7 @@ function detect(canvas, cfg){
       return n ? s/n : 0;
     };
 
+    mark("contornos+sobel");
     // ---- Agrupar candidatos (consenso) ----
     const clusters = [];
     for(const c of cands){
@@ -1051,6 +1428,7 @@ function detect(canvas, cfg){
       d.why = why;
       scored.push(d);
     }
+    mark("verificar " + clusters.length + " grupos");
     let pass = scored.filter(d=>!d.why);
     const rejected = scored.filter(d=>d.why && d.edge>=0.25);
     const wMedian = arr => { // mediana ponderada por votos×confianza
@@ -1130,8 +1508,134 @@ function detect(canvas, cfg){
         if(kept.every(k=>Math.hypot(k.x-d.x,k.y-d.y) >= 0.75*Math.max(k.r,d.r))){ d.why=null; kept.push(d); }
       }
     }
+    mark("filtros");
+    // ---- Rejilla de la pila: radio real, centrado exacto, sin encimados y tubos faltantes ----
+    let latticeAdded = 0;
+    if(cfg.uniform && cfg.lattice !== false && kept.length >= 6){
+      const median = a => { const b = a.slice().sort((p,q)=>p-q); return b[Math.floor(b.length/2)]; };
+      // 1. radio: tubos que se tocan están a 2R entre centros
+      const nn = kept.map(d => { let b = 1e9; for(const o of kept) if(o!==d){ const q = Math.hypot(o.x-d.x, o.y-d.y); if(q > d.r*0.5 && q < b) b = q; } return b; });
+      const Rn = median(nn)/2;
+      const P = 2*Rn;           // paso de la rejilla (distancia entre centros vecinos): toda la lógica espacial usa P,
+                                // porque el radio del borde puede ser el del hueco interior
+      if(Rn >= rMin*0.8 && Rn <= rMax*1.3){
+        let R = Rn, bestS = -1;
+        const probe = kept.slice().sort((p,q)=>q.edge-p.edge).slice(0, 80);
+        for(let f=0.78; f<=1.061; f+=0.02){
+          let sc = 0; for(const d of probe) sc += edgeScore(d.x, d.y, Rn*f).edge;
+          if(sc > bestS){ bestS = sc; R = Rn*f; }
+        }
+        // 2. centrar cada círculo sobre el borde real (búsqueda gruesa → fina)
+        const snap = (x, y, span) => {
+          let bx = x, by = y, br = R, be = edgeScore(x, y, R).edge;
+          for(const st of [Math.max(1, R*0.14), Math.max(0.7, R*0.05)]){
+            const n = Math.max(1, Math.round((st > R*0.1 ? span : st*2)/st)), cx = bx, cy = by;
+            for(let i=-n;i<=n;i++) for(let j=-n;j<=n;j++){
+              const e = edgeScore(cx+i*st, cy+j*st, R).edge;
+              if(e > be){ be = e; bx = cx+i*st; by = cy+j*st; }
+            }
+          }
+          for(const f of [0.95, 1.05]){ const e = edgeScore(bx, by, R*f).edge; if(e > be){ be = e; br = R*f; } }
+          return {x:bx, y:by, r:br, edge:be};
+        };
+        const snapped = kept.map(d => Object.assign({}, d, snap(d.x, d.y, R*0.45)));
+        // firma del tubo: perfil de brillo del centro hacia afuera (hueco → pared → borde)
+        const RHO = [0.15, 0.35, 0.55, 0.72, 0.86, 0.97, 1.12];
+        const profile = (x, y) => {
+          const v = RHO.map(rho => {
+            let sm = 0, n = 0;
+            for(let k=0;k<24;k++){
+              const t = k/24*Math.PI*2, px = Math.round(x + rho*R*Math.cos(t)), py = Math.round(y + rho*R*Math.sin(t));
+              if(px<0||py<0||px>=W||py>=H) continue;
+              sm += I[py*W+px]; n++;
+            }
+            return n ? sm/n : 0;
+          });
+          const m = v.reduce((a,b)=>a+b,0)/v.length, sd = Math.sqrt(v.reduce((a,b)=>a+(b-m)*(b-m),0)/v.length);
+          return sd < 3 ? null : v.map(q=>(q-m)/sd);
+        };
+        const tplSrc = snapped.slice().sort((p,q)=>q.edge-p.edge).slice(0, 100).map(d=>profile(d.x, d.y)).filter(Boolean);
+        const tpl = tplSrc.length >= 5 ? RHO.map((_,i)=>median(tplSrc.map(v=>v[i]))) : null;
+        const simil = (x, y) => {
+          if(!tpl) return 1;
+          const v = profile(x, y); if(!v) return 0;
+          let c = 0; for(let i=0;i<v.length;i++) c += v[i]*tpl[i];
+          const nt = Math.sqrt(tpl.reduce((a,b)=>a+b*b,0)), nv = Math.sqrt(v.reduce((a,b)=>a+b*b,0));
+          return c/(nt*nv || 1);
+        };
+        for(const d of snapped) d.sim = simil(d.x, d.y);
+        if(cfg.debugHook) cfg.debugHook({snap, simil, edgeScore, profile, tpl, R});
+        // 3. dos círculos encimados no pueden ser dos tubos: queda el de mejor borde
+        snapped.sort((p,q)=>q.edge-p.edge);
+        const acc = [];
+        const free = (x, y) => acc.every(q => Math.hypot(q.x-x, q.y-y) >= 0.7*P);
+        for(const d of snapped){
+          if(d.sim < 0.5){ d.why = "no se parece a los demás tubos"; rejected.push(d); }
+          else if(d.edge >= cfg.minEdge*0.9 && free(d.x, d.y)) acc.push(d);
+          else { d.why = "encimado / desfasado"; rejected.push(d); }
+        }
+        // 4. completar la rejilla: el punto opuesto a un vecino, si falta, se verifica
+        const minE = Math.max(cfg.minEdge, 0.55);
+        const tried = [];                               // puntos ya verificados y rechazados
+        for(let it=0; it<(cfg.fast?2:8); it++){
+          const added = [];
+          for(const d of acc){
+            for(const o of acc){
+              if(o === d) continue;
+              const q = Math.hypot(o.x-d.x, o.y-d.y);
+              if(q > 1.3*P || q < 0.75*P) continue;
+              const px = 2*d.x - o.x, py = 2*d.y - o.y;
+              if(px < R*0.8 || py < R*0.8 || px > W-R*0.8 || py > H-R*0.8) continue;
+              if(!free(px, py) || added.some(a => Math.hypot(a.x-px, a.y-py) < 0.7*P)) continue;
+              if(tried.some(t => Math.hypot(t[0]-px, t[1]-py) < 0.25*P)) continue;
+              // sólo huecos rodeados (≥4 vecinos). Un tubo faltante dentro de la pila o en una orilla recta
+              // tiene 4–6; las "muescas" naturales de la orilla de una pila escalonada tienen 3 y no llevan tubo
+              let nb = 0; for(const q of acc) if(Math.hypot(q.x-px, q.y-py) < 1.3*P) nb++;
+              if(nb < 4) continue;                        // puede ganar vecinos en la siguiente vuelta
+              // y tiene que estar EN LÍNEA entre dos tubos: vecino d de un lado y otro del lado opuesto.
+              // Las muescas de la orilla sólo tienen vecinos de un lado.
+              const ex = 2*px - d.x, ey = 2*py - d.y;
+              if(!acc.some(q => Math.hypot(q.x-ex, q.y-ey) < 0.35*P)) continue;
+              const c = snap(px, py, R*0.35);
+              const ok = c.edge >= minE && simil(c.x, c.y) >= 0.8;
+              if(!ok){ tried.push([px, py]); continue; }
+              if(free(c.x, c.y) && !added.some(a => Math.hypot(a.x-c.x, a.y-c.y) < 0.7*P)){
+                added.push(Object.assign(c, {conf: Math.min(1, 0.45 + 0.5*c.edge), votes:0, contrast:0, sign:0, inFrac:1, lattice:true}));
+              }
+            }
+          }
+          if(!added.length) break;
+          acc.push(...added); latticeAdded += added.length;
+        }
+        kept = acc;
+      }
+    }
+    mark("rejilla");
+    // ---- La pila es un grupo conectado de tubos que se tocan: fuera los grupos chicos ("en el aire") ----
+    if(cfg.pile !== false && kept.length >= 5){
+      // enlace = separación real entre vecinos (no el radio: puede ser el del hueco interior)
+      const nnd = kept.map(d => { let b = 1e9; for(const o of kept) if(o!==d) b = Math.min(b, Math.hypot(o.x-d.x, o.y-d.y)); return b; }).sort((p,q)=>p-q);
+      const link = 1.3*nnd[Math.floor(nnd.length/2)], n = kept.length, comp = new Array(n).fill(-1);
+      let nc = 0;
+      for(let i=0;i<n;i++){
+        if(comp[i] >= 0) continue;
+        const stack = [i]; comp[i] = nc;
+        while(stack.length){
+          const a = stack.pop();
+          for(let j=0;j<n;j++) if(comp[j] < 0 && Math.hypot(kept[a].x-kept[j].x, kept[a].y-kept[j].y) < link){ comp[j] = nc; stack.push(j); }
+        }
+        nc++;
+      }
+      const size = new Array(nc).fill(0); comp.forEach(c=>size[c]++);
+      const big = Math.max(...size), minSize = Math.max(4, Math.ceil(big*0.08));
+      kept = kept.filter((d,i)=>{
+        if(size[comp[i]] < minSize){ d.why = "fuera de la pila (en el aire)"; rejected.push(d); return false; }
+        return true;
+      });
+    }
     const rej = rejected.filter(d=>d.why);
-    return {kept, rejected:rej.slice(0,400), nCand:cands.length, nClusters:clusters.length};
+    mark("fin");
+    return {kept, rejected:rej.slice(0,400), nCand:cands.length, nClusters:clusters.length, latticeAdded, timing:TM};
   } finally {
     for(const m of mats){ try{ m.delete(); }catch(e){} }
   }
@@ -1155,7 +1659,8 @@ function render(){
   orderDets();
   const active = S.dets.filter(d=>d.state!=="removed");
   const doubt = S.dets.filter(isDoubt).length;
-  const removed = S.dets.filter(d=>d.state==="removed").length;
+  const removed = S.dets.filter(d=>d.state==="removed" && !d.erased).length;
+  const erased = S.dets.filter(d=>d.erased).length + (S.stats && S.stats.erased || 0);
   const added = S.dets.filter(d=>d.state==="manual").length;
   const auto = S.dets.filter(d=>d.state!=="manual");
   const avg = auto.length ? auto.reduce((s,d)=>s+d.conf,0)/auto.length : 0;
@@ -1166,14 +1671,58 @@ function render(){
   chips.push(`<span class="chip">${S.mode==="sweep"?"Falsos descartados":"Invisibles eliminados"} <b>${S.mode==="sweep"&&S.stats?S.stats.discarded:S.rejected.length}</b></span>`);
   if(removed) chips.push(`<span class="chip bad">Quitados <b>${removed}</b></span>`);
   if(added) chips.push(`<span class="chip ok">Agregados <b>${added}</b></span>`);
+  if(erased || (S.mask && S.mask.length)) chips.push(`<span class="chip bad">En zona borrada <b>${erased}</b></span>`);
+  if(S.tiltInfo) chips.push(`<span class="chip ok">Inclinación corregida ${Math.round(S.tiltInfo.ang)}° (${S.tiltInfo.src})</span>`);
   if(S.stats && S.stats.sweep) chips.push(`<span class="chip">Recorrido ${S.stats.secs} s · ${S.stats.frames} cuadros · ${S.stats.kfs} en el mapa</span>`);
   else if(S.stats) chips.push(`<span class="chip">${S.stats.cands} candidatos · ${S.stats.ms} ms</span>`);
+  if(S.stats && S.stats.lattice) chips.push(`<span class="chip">Completados por rejilla <b>${S.stats.lattice}</b></span>`);
   if(S.liveResult!=null) chips.push(`<span class="chip ${S.liveResult===active.length?"ok":"warn"}">En vivo: <b>${S.liveResult}</b> · foto final: <b>${active.length}</b></span>`);
   if(S.sampleTruth!=null) chips.push(`<span class="chip ${active.length===S.sampleTruth?"ok":"bad"}">Ejemplo: ${S.sampleTruth} tubos reales</span>`);
   $("chips").innerHTML = chips.join("");
   $("btnUndo").disabled = !S.history.length;
   drawView();
 }
+function setErase(on){
+  S.erasing = on;
+  $("btnErase").setAttribute("aria-pressed", String(on));
+  $("btnErase").textContent = on ? "Listo" : "Borrador";
+  $("eraseRow").hidden = !on;
+  view.classList.toggle("erasing", on);
+  $("hint").textContent = on
+    ? "Pinta con el dedo la zona que no se debe contar. Se quitan los círculos que queden dentro. Deshacer revierte el último trazo."
+    : "Toca un círculo para quitarlo. Toca un tubo sin marcar para agregarlo. Los marcados en amarillo son dudosos: revísalos.";
+}
+function brushR(){ return Math.min(S.work.width, S.work.height) * (+$("sBrush").value)/100; }
+function eraseAt(ev){
+  const rect = view.getBoundingClientRect();
+  const x = (ev.clientX-rect.left)/rect.width*S.work.width, y = (ev.clientY-rect.top)/rect.height*S.work.height;
+  const dab = {x, y, r:brushR()};
+  S.mask.push(dab); S.stroke.dabs.push(dab);
+  for(const d of S.dets){
+    if(d.state === "removed" || d.erased) continue;
+    if(Math.hypot(d.x-x, d.y-y) < dab.r){
+      S.stroke.affected.push({d, prev:d.state});
+      if(d.state === "manual"){ d.erased = true; d.state = "removed"; } else { d.state = "removed"; d.erased = true; }
+    }
+  }
+  render();
+}
+(function(){
+  let down = false;
+  view.addEventListener("pointerdown", e => {
+    if(!S.erasing || !S.full) return;
+    down = true; view.setPointerCapture(e.pointerId);
+    S.stroke = {dabs:[], affected:[]};
+    eraseAt(e);
+  });
+  view.addEventListener("pointermove", e => { if(down && S.erasing) eraseAt(e); });
+  const up = () => {
+    if(!down) return; down = false;
+    if(S.stroke && S.stroke.dabs.length){ S.history.push({type:"erase", stroke:S.stroke}); render(); }
+    S.stroke = null;
+  };
+  view.addEventListener("pointerup", up); view.addEventListener("pointercancel", up);
+})();
 function drawView(){
   if(!S.full) return;
   view.width = S.full.width; view.height = S.full.height;
@@ -1182,6 +1731,10 @@ function drawView(){
   const rr = S.dets.map(d=>d.r*S.k).sort((a,b)=>a-b), mr = rr[Math.floor(rr.length/2)];
   const k = S.k, lw = mr ? Math.max(1.5, Math.min(S.full.width/420, mr*0.09)) : Math.max(2, S.full.width/420);
   g.fillStyle = "rgba(0,0,0,.18)"; g.fillRect(0,0,view.width,view.height);
+  if(S.mask && S.mask.length){
+    g.fillStyle = "rgba(255,77,94,.30)";
+    for(const d of S.mask){ g.beginPath(); g.arc(d.x*k, d.y*k, d.r*k, 0, Math.PI*2); g.fill(); }
+  }
   if($("sShowRej").checked){
     g.setLineDash([lw*1.2,lw*1.8]); g.lineWidth = lw*0.8; g.strokeStyle = "rgba(170,182,190,.8)";
     for(const d of S.rejected){ g.beginPath(); g.arc(d.x*k,d.y*k,d.r*k,0,Math.PI*2); g.stroke(); }
@@ -1191,6 +1744,7 @@ function drawView(){
   for(const d of S.dets){
     const x=d.x*k, y=d.y*k, r=d.r*k;
     g.beginPath(); g.arc(x,y,r,0,Math.PI*2);
+    if(d.state==="removed" && d.erased) continue;
     if(d.state==="removed"){
       g.setLineDash([lw*2,lw*1.5]); g.lineWidth=lw; g.strokeStyle="#FF4D5E"; g.stroke(); g.setLineDash([]);
       g.beginPath(); const s=r*0.45; g.moveTo(x-s,y-s); g.lineTo(x+s,y+s); g.moveTo(x+s,y-s); g.lineTo(x-s,y+s); g.stroke();
@@ -1210,7 +1764,7 @@ function drawView(){
 
 /* ---------------- Edición por toque ---------------- */
 function onTap(ev){
-  if(!S.full) return;
+  if(!S.full || S.erasing) return;
   const rect = view.getBoundingClientRect();
   const x = (ev.clientX-rect.left)/rect.width*S.work.width;
   const y = (ev.clientY-rect.top)/rect.height*S.work.height;
@@ -1234,6 +1788,11 @@ function undo(){
   if(h.type==="state") h.d.state = h.prev;
   else if(h.type==="add") S.dets.splice(S.dets.indexOf(h.d),1);
   else if(h.type==="del") S.dets.push(h.d);
+  else if(h.type==="erase"){
+    const set = new Set(h.stroke.dabs);
+    S.mask = S.mask.filter(d => !set.has(d));
+    for(const a of h.stroke.affected){ a.d.state = a.prev; a.d.erased = false; }
+  }
   render();
 }
 function applyZoom(){
@@ -1292,6 +1851,14 @@ $("btnSample").addEventListener("click", ()=>{ const s=makeSample(); S.sampleTru
 $("btnNew").addEventListener("click", ()=>{ show("scrStart"); openCamera(S.camMode); });
 $("btnHome").addEventListener("click", ()=>show("scrStart"));
 $("btnUndo").addEventListener("click", undo);
+$("btnErase").addEventListener("click", ()=>setErase(!S.erasing));
+$("btnCamErase").addEventListener("click", ()=>setCamErase(!S.camErasing));
+$("btnLevel").addEventListener("click", ()=>{
+  if(!Tilt.has){ toast("Este dispositivo no reporta inclinación"); return; }
+  if(Tilt.ref){ Tilt.ref = null; toast("Referencia automática: pila vertical / tubos parados"); }
+  else { Tilt.ref = upCam(); toast("Ángulo actual fijado como “de frente”"); }
+  updateLevel();
+});
 $("btnZoom").addEventListener("click", ()=>{ S.zoom = S.zoom>=3 ? 1 : S.zoom+1; applyZoom(); });
 $("btnReanalyze").addEventListener("click", ()=>{
   if(S.mode==="sweep"){ toast("En recorrido el conteo viene del mapa: corrige tocando los círculos"); return; }
