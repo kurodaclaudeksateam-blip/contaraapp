@@ -2,6 +2,27 @@
 
 App web (un solo `index.html`) para contar tubos / círculos en una foto tomada con la cámara del teléfono.
 
+## App Android (APK)
+La APK empaqueta esta misma app con **Capacitor 6**. Tiene las mismas funciones que la web y **OpenCV incluido**, así que no descarga nada y funciona sin internet.
+
+- Instalación: copia `ContadorTubos-v1.0.0.apk` al teléfono, ábrelo y permite instalar apps de origen desconocido. Requiere Android 5.1+.
+- Permisos: cámara (foto, en vivo, recorrido) y vibración (aviso de rastreo perdido).
+- El botón "atrás" regresa al inicio y la pantalla se mantiene encendida con la cámara abierta.
+
+### Compilar la APK
+Requiere Node 18+, JDK 17 y Android SDK 34 (`ANDROID_HOME`).
+```bash
+npm install
+npm run apk
+```
+El resultado queda en `android/app/build/outputs/apk/release/app-release.apk`. La firma usa `keystore/keystore.properties` (fuera del repositorio). Sin ese archivo la APK sale sin firmar. **Guarda la llave**: sin ella no se pueden publicar actualizaciones que se instalen encima.
+
+- `npm run build`: arma `www/` (index.html + OpenCV local + fuentes).
+- `python scripts/icons.py`: regenera el icono en todas las densidades.
+
+## Versión web
+En la web, OpenCV se descarga **una sola vez** del CDN y el *service worker* (`sw.js`) lo guarda junto con la app y las fuentes. Las siguientes aperturas son instantáneas y sin internet.
+
 ## Uso
 1. Abre la página en el teléfono (debe servirse por **HTTPS** para que la cámara en vivo funcione, p. ej. GitHub Pages).
 2. Toca **Iniciar y abrir cámara**, encuadra los tubos de frente y toma la foto.

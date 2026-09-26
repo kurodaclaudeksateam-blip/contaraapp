@@ -1,1 +1,6 @@
 _pruebas/
+node_modules/
+www/
+release/
+keystore/
+release-build.log

@@ -1,0 +1,11 @@
+{
+  "appId": "com.kuroda.contadortubos",
+  "appName": "Contador de Tubos",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#0E1418",
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  }
+}
